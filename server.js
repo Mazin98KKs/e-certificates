@@ -12,38 +12,36 @@ app.use(bodyParser.json());
 // (For production, replace with a proper database)
 const storedDetails = [];
 
-// Function to send a WhatsApp template message
-async function sendTemplateMessage(to, templateName) {
-  const headers = {
-    'Authorization': `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
-    'Content-Type': 'application/json',
-  };
+// Webhook Verification Endpoint
+app.get('/webhook', (req, res) => {
+  const VERIFY_TOKEN = 'mysecrettoken';
 
-  const payload = {
-    messaging_product: 'whatsapp',
-    to,
-    type: 'template',
-    template: {
-      name: templateName,
-      language: { code: 'en_US' },
-    },
-  };
+  // Extract the verification parameters from the query string
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
 
-  try {
-    const response = await axios.post(process.env.WHATSAPP_API_URL, payload, { headers });
-    console.log(`Template message "${templateName}" sent to ${to}`);
-    return response.data;
-  } catch (error) {
-    console.error('Error sending template message:', error.response ? error.response.data : error.message);
-    throw error;
+  // Check the mode and token sent by Meta
+  if (mode && token) {
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+      // Token matches, respond with the challenge
+      console.log('WEBHOOK_VERIFIED');
+      res.status(200).send(challenge);
+    } else {
+      // Token did not match
+      res.sendStatus(403); // Forbidden
+    }
+  } else {
+    // Required parameters are missing
+    res.sendStatus(400); // Bad Request
   }
-}
+});
 
 // Webhook to handle inbound WhatsApp messages
 app.post('/webhook', async (req, res) => {
   const body = req.body;
 
-  // Check if a valid message object exists
+  // Check if the webhook event is from WhatsApp
   if (body.object === 'whatsapp_business_account' && body.entry) {
     const changes = body.entry[0]?.changes || [];
     for (const change of changes) {
@@ -51,7 +49,7 @@ app.post('/webhook', async (req, res) => {
       const messages = value.messages || [];
 
       for (const message of messages) {
-        const from = message.from; // Sender phone number
+        const from = message.from; // Sender's phone number
         const text = message.text?.body; // Message content
 
         console.log(`Received message from ${from}: ${text}`);
@@ -80,6 +78,33 @@ app.post('/webhook', async (req, res) => {
   // Acknowledge the webhook event
   res.sendStatus(200);
 });
+
+// Function to send a WhatsApp template message
+async function sendTemplateMessage(to, templateName) {
+  const headers = {
+    'Authorization': `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
+    'Content-Type': 'application/json',
+  };
+
+  const payload = {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'template',
+    template: {
+      name: templateName,
+      language: { code: 'en_US' },
+    },
+  };
+
+  try {
+    const response = await axios.post(process.env.WHATSAPP_API_URL, payload, { headers });
+    console.log(`Template message "${templateName}" sent to ${to}`);
+    return response.data;
+  } catch (error) {
+    console.error('Error sending template message:', error.response ? error.response.data : error.message);
+    throw error;
+  }
+}
 
 // Endpoint to view stored details (for testing purposes)
 app.get('/stored-details', (req, res) => {
