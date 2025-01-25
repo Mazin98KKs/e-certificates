@@ -8,35 +8,6 @@ const app = express();
 // Middleware to parse JSON
 app.use(bodyParser.json());
 
-// In-memory store for received details
-// (For production, replace with a proper database)
-const storedDetails = [];
-
-// Webhook Verification Endpoint
-app.get('/webhook', (req, res) => {
-  const VERIFY_TOKEN = 'mysecrettoken';
-
-  // Extract the verification parameters from the query string
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-
-  // Check the mode and token sent by Meta
-  if (mode && token) {
-    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-      // Token matches, respond with the challenge
-      console.log('WEBHOOK_VERIFIED');
-      res.status(200).send(challenge);
-    } else {
-      // Token did not match
-      res.sendStatus(403); // Forbidden
-    }
-  } else {
-    // Required parameters are missing
-    res.sendStatus(400); // Bad Request
-  }
-});
-
 // Webhook to handle inbound WhatsApp messages
 app.post('/webhook', async (req, res) => {
   const body = req.body;
@@ -50,26 +21,20 @@ app.post('/webhook', async (req, res) => {
 
       for (const message of messages) {
         const from = message.from; // Sender's phone number
-        const text = message.text?.body; // Message content
+        console.log(`Received message from ${from}:`, message.text?.body || 'No text content');
 
-        console.log(`Received message from ${from}: ${text}`);
-
-        // Send the recipient_details template to the user
+        // Send the Arabic "welcome" template with buttons
         try {
-          await sendTemplateMessage(from, 'recipient_details');
+          await sendArabicTemplate(from);
+          console.log(`Sent "welcome" template to ${from}`);
         } catch (err) {
-          console.error(`Failed to send template message to ${from}`);
+          console.error(`Failed to send template to ${from}:`, err.message);
         }
 
-        // For demonstration, assume user replies with "Name, PhoneNumber"
-        if (text && text.includes(',')) {
-          const [name, phoneNumber] = text.split(',').map((item) => item.trim());
-
-          if (name && phoneNumber) {
-            // Store the details
-            storedDetails.push({ from, name, phoneNumber });
-            console.log(`Stored details: ${name}, ${phoneNumber}`);
-          }
+        // Log user’s response to the template
+        if (message.type === 'button') {
+          const userResponse = message.button?.payload;
+          console.log(`User responded with button payload: ${userResponse}`);
         }
       }
     }
@@ -79,8 +44,8 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 });
 
-// Function to send a WhatsApp template message
-async function sendTemplateMessage(to, templateName) {
+// Function to send a ready-made Arabic template with buttons
+async function sendArabicTemplate(to) {
   const headers = {
     'Authorization': `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
     'Content-Type': 'application/json',
@@ -91,25 +56,13 @@ async function sendTemplateMessage(to, templateName) {
     to,
     type: 'template',
     template: {
-      name: templateName,
-      language: { code: 'en_US' },
+      name: 'welcome', // Ensure this matches your Arabic template name
+      language: { code: 'ar' }, // Arabic language code
     },
   };
 
-  try {
-    const response = await axios.post(process.env.WHATSAPP_API_URL, payload, { headers });
-    console.log(`Template message "${templateName}" sent to ${to}`);
-    return response.data;
-  } catch (error) {
-    console.error('Error sending template message:', error.response ? error.response.data : error.message);
-    throw error;
-  }
+  await axios.post(process.env.WHATSAPP_API_URL, payload, { headers });
 }
-
-// Endpoint to view stored details (for testing purposes)
-app.get('/stored-details', (req, res) => {
-  res.json(storedDetails);
-});
 
 // Start the server
 const PORT = process.env.PORT || 3000;
