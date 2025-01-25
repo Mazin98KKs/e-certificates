@@ -8,6 +8,28 @@ const app = express();
 // Middleware to parse JSON
 app.use(bodyParser.json());
 
+// Webhook Verification Endpoint
+app.get('/webhook', (req, res) => {
+  const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'mysecrettoken';
+
+  // Extract the verification parameters from the query string
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  // Check the mode and token sent by Meta
+  if (mode && token) {
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+      console.log('WEBHOOK_VERIFIED');
+      res.status(200).send(challenge);
+    } else {
+      res.sendStatus(403); // Forbidden
+    }
+  } else {
+    res.sendStatus(400); // Bad Request
+  }
+});
+
 // Webhook to handle inbound WhatsApp messages
 app.post('/webhook', async (req, res) => {
   const body = req.body;
@@ -25,16 +47,10 @@ app.post('/webhook', async (req, res) => {
 
         // Send the Arabic "welcome" template with buttons
         try {
-          await sendArabicTemplate(from);
+          await sendTemplateMessage(from, 'welcome', 'ar');
           console.log(`Sent "welcome" template to ${from}`);
         } catch (err) {
           console.error(`Failed to send template to ${from}:`, err.message);
-        }
-
-        // Log user’s response to the template
-        if (message.type === 'button') {
-          const userResponse = message.button?.payload;
-          console.log(`User responded with button payload: ${userResponse}`);
         }
       }
     }
@@ -44,8 +60,8 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 });
 
-// Function to send a ready-made Arabic template with buttons
-async function sendArabicTemplate(to) {
+// Function to send a WhatsApp template message
+async function sendTemplateMessage(to, templateName, languageCode = 'en_US') {
   const headers = {
     'Authorization': `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
     'Content-Type': 'application/json',
@@ -56,12 +72,19 @@ async function sendArabicTemplate(to) {
     to,
     type: 'template',
     template: {
-      name: 'welcome', // Ensure this matches your Arabic template name
-      language: { code: 'ar' }, // Arabic language code
+      name: templateName,
+      language: { code: languageCode },
     },
   };
 
-  await axios.post(process.env.WHATSAPP_API_URL, payload, { headers });
+  try {
+    const response = await axios.post(process.env.WHATSAPP_API_URL, payload, { headers });
+    console.log(`Template message "${templateName}" sent to ${to}`);
+    return response.data;
+  } catch (error) {
+    console.error('Error sending template message:', error.response?.data || error.message);
+    throw error;
+  }
 }
 
 // Start the server
