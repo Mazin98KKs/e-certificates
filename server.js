@@ -124,13 +124,13 @@ async function handleUserMessage(from, text) {
 
     case 'confirm_send':
       if (/^نعم$/i.test(text.trim())) {
-        // Send the certificate using the "gift" template with a header image
+        // Generate the Cloudinary image URL with the recipient’s name in a larger font
         const certificateImageUrl = cloudinary.url(CERTIFICATE_PUBLIC_IDS[session.selectedCertificate], {
           transformation: [
             {
               overlay: {
                 font_family: "Arial",
-                font_size: 40,
+                font_size: 80, // Doubled font size
                 text: session.recipientName,
               },
               gravity: "center",
@@ -139,7 +139,8 @@ async function handleUserMessage(from, text) {
           ],
         });
 
-        await sendCertificateTemplate(from, session.recipientName, certificateImageUrl);
+        // Send the gift template with the Cloudinary image URL
+        await sendCertificateTemplate(session.recipientNumber, session.recipientName, certificateImageUrl);
         session.certificatesSent++;
 
         await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
@@ -204,13 +205,13 @@ async function sendWhatsAppText(to, message) {
 /**
  * Send the certificate template using WhatsApp's "gift" template
  */
-async function sendCertificateTemplate(from, recipientName, certificateImageUrl) {
+async function sendCertificateTemplate(recipient, recipientName, certificateImageUrl) {
   try {
     await axios.post(
       process.env.WHATSAPP_API_URL,
       {
         messaging_product: 'whatsapp',
-        to: from,
+        to: recipient,
         type: 'template',
         template: {
           name: 'gift',
@@ -246,7 +247,7 @@ async function sendCertificateTemplate(from, recipientName, certificateImageUrl)
         },
       }
     );
-    console.log(`Template 'gift' sent to ${from} with recipient name: ${recipientName}`);
+    console.log(`Template 'gift' sent to ${recipient} with recipient name: ${recipientName}`);
   } catch (error) {
     console.error('Error sending WhatsApp template:', error.response?.data || error.message);
   }
