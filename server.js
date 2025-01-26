@@ -1,11 +1,5 @@
 require('dotenv').config();
 
-const apiUrl = process.env.WHATSAPP_API_URL;
-const token = process.env.WHATSAPP_API_TOKEN;
-
-console.log("WHATSAPP_API_URL:", apiUrl);
-console.log("WHATSAPP_API_TOKEN:", token);
-
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
@@ -15,6 +9,7 @@ app.use(bodyParser.json());
 
 // In-memory user sessions
 const userSessions = {};
+const SESSION_TIMEOUT = 5 * 60 * 1000; // 5 minutes in milliseconds
 
 /**
  * 1) Webhook Verification Endpoint
@@ -50,11 +45,11 @@ app.post('/webhook', async (req, res) => {
 
         const messages = value.messages;
         for (const message of messages) {
-          const from = message.from; // The sender's WhatsApp number
-          const text = message.text?.body || '';
-          console.log(`Incoming message from ${from}: ${text}`);
+          const from = message.from;
+          console.log(`Incoming message from ${from}`);
 
-          await handleUserMessage(from, text);
+          // Handle user message and update session timestamp
+          await handleUserMessage(from);
         }
       }
     }
@@ -67,74 +62,44 @@ app.post('/webhook', async (req, res) => {
 /**
  * Handle the conversation logic
  */
-async function handleUserMessage(from, text) {
+async function handleUserMessage(from) {
   let session = userSessions[from];
+  const now = Date.now();
+
   if (!session) {
-    session = { step: 'welcome' };
+    // Create a new session
+    session = { createdAt: now };
     userSessions[from] = session;
+  } else {
+    // Update the session timestamp
+    session.createdAt = now;
   }
 
-  switch (session.step) {
-    case 'welcome':
-      await sendWhatsAppText(from, "Welcome! Please select a certificate:\n1. Free\n2. Paid");
-      session.step = 'select_certificate';
-      break;
+  // Send the initial welcome template
+  await sendTemplateMessage(from, "welcome");
 
-    case 'select_certificate':
-      if (/free/i.test(text) || text === '1') {
-        session.certificateType = 'free';
-        session.step = 'ask_details';
-        await sendWhatsAppText(from, "Please provide the recipient's name and number, e.g.: John, 123456789");
-      } else if (/paid/i.test(text) || text === '2') {
-        session.certificateType = 'paid';
-        session.step = 'ask_details';
-        await sendWhatsAppText(from, "Please provide the recipient's name and number, e.g.: John, 123456789");
-      } else {
-        await sendWhatsAppText(from, "Invalid choice. Type '1' for Free or '2' for Paid.");
-      }
-      break;
-
-    case 'ask_details':
-      if (text.includes(',')) {
-        const [name, number] = text.split(',').map(s => s.trim());
-        if (name && number) {
-          session.recipientName = name;
-          session.recipientNumber = number;
-          session.step = 'done';
-          await sendWhatsAppText(from, `Got it. Certificate will be sent to ${name} at ${number}.`);
-        } else {
-          await sendWhatsAppText(from, "Please send in the format: Name, Number");
-        }
-      } else {
-        await sendWhatsAppText(from, "Please send in the format: Name, Number");
-      }
-      break;
-
-    case 'done':
-      break;
-
-    default:
-      await sendWhatsAppText(from, "Something went wrong. Type 'Hello' or 'Hi' to restart.");
-      userSessions[from] = { step: 'welcome' };
-      break;
-  }
+  // After user selects a button, send the next template
+  // This logic is a placeholder and can be adjusted based on actual incoming messages or user choices
+  await sendTemplateMessage(from, "recipient_details");
 }
 
 /**
- * 3) Send a simple WhatsApp text message
+ * Send a template message
  */
-async function sendWhatsAppText(to, message) {
+async function sendTemplateMessage(to, templateName) {
   try {
     const url = process.env.WHATSAPP_API_URL;
-    console.log("WHATSAPP_API_URL:", url);
 
     await axios.post(
       url,
       {
         messaging_product: 'whatsapp',
         to,
-        type: 'text',
-        text: { body: message },
+        type: 'template',
+        template: {
+          name: templateName,
+          language: { code: 'ar' },
+        },
       },
       {
         headers: {
@@ -143,11 +108,27 @@ async function sendWhatsAppText(to, message) {
         },
       }
     );
-    console.log(`Sent text to ${to}: ${message}`);
+    console.log(`Sent template "${templateName}" to ${to}`);
   } catch (error) {
-    console.error('Error sending WhatsApp text:', error.response?.data || error.message);
+    console.error(`Error sending template "${templateName}":`, error.response?.data || error.message);
   }
 }
+
+/**
+ * Cleanup function to remove expired sessions
+ */
+function cleanupSessions() {
+  const now = Date.now();
+  for (const [user, session] of Object.entries(userSessions)) {
+    if (now - session.createdAt > SESSION_TIMEOUT) {
+      delete userSessions[user];
+      console.log(`Session for user ${user} expired and was removed.`);
+    }
+  }
+}
+
+// Run the cleanup function every minute
+setInterval(cleanupSessions, 60 * 1000);
 
 // Start the server
 const PORT = process.env.PORT || 3000;
