@@ -15,9 +15,9 @@ const userSessions = {};
 
 // Map of certificates to Cloudinary public IDs
 const CERTIFICATE_PUBLIC_IDS = {
-  1: malgof_egqihg,
-  2: kfoo_ncybxx,
-  3: donothing_nvdhcx,
+  1: "malgof_egqihg",
+  2: "kfoo_ncybxx",
+  3: "donothing_nvdhcx",
 };
 
 /**
