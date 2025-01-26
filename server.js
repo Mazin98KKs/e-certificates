@@ -1,4 +1,11 @@
 require('dotenv').config();
+// Print all environment variables
+console.log("All environment variables:", process.env);
+
+// Print the specific variables you want to verify
+console.log("WHATSAPP_API_URL:", process.env.WHATSAPP_API_URL);
+console.log("WHATSAPP_API_TOKEN:", process.env.WHATSAPP_API_TOKEN);
+
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
