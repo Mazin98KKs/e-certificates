@@ -72,8 +72,10 @@ app.post('/webhook', async (req, res) => {
  */
 async function handleUserMessage(from, text) {
   let session = userSessions[from];
-  if (!session) {
-    session = { step: 'welcome' };
+
+  // If the user starts a new conversation, reset their session
+  if (!session || /^(hello|hi|مرحبا|ابدأ)$/i.test(text.trim())) {
+    session = { step: 'welcome', certificatesSent: 0 };
     userSessions[from] = session;
   }
 
@@ -106,13 +108,12 @@ async function handleUserMessage(from, text) {
         if (name && number) {
           session.recipientName = name;
           session.recipientNumber = number;
-          session.step = 'done';
+          session.step = 'confirm_send';
 
-          // Send the certificate image using Cloudinary and WhatsApp API
-          await sendCertificateImage(session.selectedCertificate, from, number, name);
-
-          // Confirm to the sender
-          await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
+          await sendWhatsAppText(
+            from,
+            `سيتم إرسال الشهادة إلى ${name}. هل تريد إرسالها الآن؟ (نعم/لا)`
+          );
         } else {
           await sendWhatsAppText(from, "يرجى إرسال التفاصيل بالصيغ المرفقة.");
         }
@@ -121,12 +122,41 @@ async function handleUserMessage(from, text) {
       }
       break;
 
-    case 'done':
+    case 'confirm_send':
+      if (/^نعم$/i.test(text.trim())) {
+        // Send the certificate using the "gift" template
+        await sendCertificateTemplate(from, session.recipientName);
+        session.certificatesSent++;
+
+        await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
+        session.step = 'ask_another';
+        await sendWhatsAppText(from, "هل ترغب في إرسال شهادة أخرى؟ (نعم/لا)");
+      } else if (/^لا$/i.test(text.trim())) {
+        await sendWhatsAppText(from, "تم إنهاء الجلسة. شكراً.");
+        userSessions[from] = null;
+      } else {
+        await sendWhatsAppText(from, "يرجى الرد بـ (نعم/لا).");
+      }
+      break;
+
+    case 'ask_another':
+      if (/^نعم$/i.test(text.trim())) {
+        session.step = 'welcome';
+        await sendWhatsAppText(
+          from,
+          "اختر الشهادة المراد إرسالها:\n1. شهادة الملقوف\n2. شهادة الكفو\n3. شهادة اللي مايسوي شي"
+        );
+      } else if (/^لا$/i.test(text.trim())) {
+        await sendWhatsAppText(from, "تم إنهاء الجلسة. شكراً.");
+        userSessions[from] = null;
+      } else {
+        await sendWhatsAppText(from, "يرجى الرد بـ (نعم/لا).");
+      }
       break;
 
     default:
       await sendWhatsAppText(from, "حدث خطأ. أرسل 'مرحبا' أو 'ابدأ' لتجربة جديدة.");
-      userSessions[from] = { step: 'welcome' };
+      userSessions[from] = { step: 'welcome', certificatesSent: 0 };
       break;
   }
 }
@@ -158,36 +188,31 @@ async function sendWhatsAppText(to, message) {
 }
 
 /**
- * Send the certificate image via WhatsApp using Cloudinary
+ * Send the certificate template using WhatsApp's "gift" template
  */
-async function sendCertificateImage(selectedCertificate, sender, recipient, recipientName) {
+async function sendCertificateTemplate(from, recipientName) {
   try {
-    const publicId = CERTIFICATE_PUBLIC_IDS[selectedCertificate];
-    if (!publicId) {
-      throw new Error(`No Cloudinary public ID found for certificate ${selectedCertificate}`);
-    }
-
-    const imageUrl = cloudinary.url(publicId, {
-      transformation: [
-        {
-          overlay: {
-            font_family: "Arial",
-            font_size: 40,
-            text: recipientName,
-          },
-          gravity: "north",
-          y: 80,
-        },
-      ],
-    });
-
     await axios.post(
       process.env.WHATSAPP_API_URL,
       {
         messaging_product: 'whatsapp',
-        to: recipient,
-        type: 'image',
-        image: { link: imageUrl },
+        to: from,
+        type: 'template',
+        template: {
+          name: 'gift',
+          language: { code: 'ar' },
+          components: [
+            {
+              type: 'body',
+              parameters: [
+                {
+                  type: 'text',
+                  text: recipientName,
+                },
+              ],
+            },
+          ],
+        },
       },
       {
         headers: {
@@ -196,10 +221,9 @@ async function sendCertificateImage(selectedCertificate, sender, recipient, reci
         },
       }
     );
-
-    console.log(`Sent certificate image to ${recipient}`);
+    console.log(`Template 'gift' sent to ${from} with recipient name: ${recipientName}`);
   } catch (error) {
-    console.error('Error sending certificate image:', error.response?.data || error.message);
+    console.error('Error sending WhatsApp template:', error.response?.data || error.message);
   }
 }
 
