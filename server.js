@@ -1,5 +1,4 @@
 require('dotenv').config();
-
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
@@ -9,7 +8,6 @@ app.use(bodyParser.json());
 
 // In-memory user sessions
 const userSessions = {};
-const SESSION_TIMEOUT = 5 * 60 * 1000; // 5 minutes in milliseconds
 
 /**
  * 1) Webhook Verification Endpoint
@@ -46,10 +44,9 @@ app.post('/webhook', async (req, res) => {
         const messages = value.messages;
         for (const message of messages) {
           const from = message.from;
-          console.log(`Incoming message from ${from}`);
-
-          // Handle user message and update session timestamp
-          await handleUserMessage(from);
+          const text = message.text?.body || '';
+          console.log(`Incoming message from ${from}: ${text}`);
+          await handleUserMessage(from, text);
         }
       }
     }
@@ -62,73 +59,131 @@ app.post('/webhook', async (req, res) => {
 /**
  * Handle the conversation logic
  */
-async function handleUserMessage(from) {
+async function handleUserMessage(from, text) {
   let session = userSessions[from];
-  const now = Date.now();
-
   if (!session) {
-    // Create a new session
-    session = { createdAt: now };
+    session = { step: 'welcome' };
     userSessions[from] = session;
-  } else {
-    // Update the session timestamp
-    session.createdAt = now;
   }
 
-  // Send the initial welcome template
-  await sendTemplateMessage(from, "welcome");
+  switch (session.step) {
+    case 'welcome':
+      // Send message in Arabic with the three certificate options
+      await sendWhatsAppText(
+        from,
+        "اختر الشهادة المراد إرسالها:\n1. شهادة الملقوف\n2. شهادة الكفو\n3. شهادة اللي المكافح"
+      );
+      session.step = 'select_certificate';
+      break;
 
-  // After user selects a button, send the next template
-  // This logic is a placeholder and can be adjusted based on actual incoming messages or user choices
-  await sendTemplateMessage(from, "recipient_details");
+    case 'select_certificate':
+      const choice = parseInt(text.trim(), 10);
+      if (choice >= 1 && choice <= 3) {
+        session.selectedCertificate = choice;
+        session.step = 'ask_details';
+        await sendWhatsAppText(
+          from,
+          "الرجاء إدخال اسم ورقم المستلم بصيغة: الاسم, الرقم\nمثال: أحمد, 123456789"
+        );
+      } else {
+        await sendWhatsAppText(from, "يرجى اختيار رقم صحيح من 1 إلى 3.");
+      }
+      break;
+
+    case 'ask_details':
+      if (text.includes(',')) {
+        const [name, number] = text.split(',').map((s) => s.trim());
+        if (name && number) {
+          session.recipientName = name;
+          session.recipientNumber = number;
+          session.step = 'done';
+
+          // Send the certificate as a template message
+          await sendCertificateTemplate(from, number, name);
+
+          // Confirm to the sender
+          await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
+        } else {
+          await sendWhatsAppText(from, "يرجى إرسال التفاصيل بالصيغ المرفقة.");
+        }
+      } else {
+        await sendWhatsAppText(from, "يرجى إرسال التفاصيل بالصيغ المرفقة.");
+      }
+      break;
+
+    case 'done':
+      break;
+
+    default:
+      await sendWhatsAppText(from, "حدث خطأ. أرسل 'مرحبا' أو 'ابدأ' لتجربة جديدة.");
+      userSessions[from] = { step: 'welcome' };
+      break;
+  }
 }
 
 /**
- * Send a template message
+ * Send a simple WhatsApp text message
  */
-async function sendTemplateMessage(to, templateName) {
+async function sendWhatsAppText(to, message) {
   try {
-    const url = process.env.WHATSAPP_API_URL;
-
     await axios.post(
-      url,
+      process.env.WHATSAPP_API_URL,
       {
         messaging_product: 'whatsapp',
         to,
-        type: 'template',
-        template: {
-          name: templateName,
-          language: { code: 'ar' },
-        },
+        type: 'text',
+        text: { body: message },
       },
       {
         headers: {
-          'Authorization': `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
+          Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
           'Content-Type': 'application/json',
         },
       }
     );
-    console.log(`Sent template "${templateName}" to ${to}`);
+    console.log(`Sent text to ${to}: ${message}`);
   } catch (error) {
-    console.error(`Error sending template "${templateName}":`, error.response?.data || error.message);
+    console.error('Error sending WhatsApp text:', error.response?.data || error.message);
   }
 }
 
 /**
- * Cleanup function to remove expired sessions
+ * Send the certificate template
  */
-function cleanupSessions() {
-  const now = Date.now();
-  for (const [user, session] of Object.entries(userSessions)) {
-    if (now - session.createdAt > SESSION_TIMEOUT) {
-      delete userSessions[user];
-      console.log(`Session for user ${user} expired and was removed.`);
-    }
+async function sendCertificateTemplate(sender, recipient, recipientName) {
+  try {
+    const templateData = {
+      messaging_product: 'whatsapp',
+      to: recipient,
+      type: 'template',
+      template: {
+        name: 'gift',
+        language: { code: 'ar' },
+        components: [
+          {
+            type: 'body',
+            parameters: [{ type: 'text', text: recipientName }],
+          },
+        ],
+      },
+    };
+
+    await axios.post(
+      process.env.WHATSAPP_API_URL,
+      templateData,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    console.log(`Sent certificate template 'gift' to ${recipient} with recipient name: ${recipientName}`);
+  } catch (error) {
+    console.error('Error sending certificate template:', error.response?.data || error.message);
   }
 }
-
-// Run the cleanup function every minute
-setInterval(cleanupSessions, 60 * 1000);
 
 // Start the server
 const PORT = process.env.PORT || 3000;
