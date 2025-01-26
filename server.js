@@ -33,7 +33,6 @@ app.get('/webhook', (req, res) => {
  * 2) Webhook for Incoming WhatsApp Messages
  */
 app.post('/webhook', async (req, res) => {
-  // Basic structure checks
   if (req.body.object === 'whatsapp_business_account') {
     const entry = req.body.entry && req.body.entry[0];
     if (entry && entry.changes) {
@@ -62,7 +61,6 @@ app.post('/webhook', async (req, res) => {
  * Handle the conversation logic
  */
 async function handleUserMessage(from, text) {
-  // Get or create user session
   let session = userSessions[from];
   if (!session) {
     session = { step: 'welcome' };
@@ -71,7 +69,6 @@ async function handleUserMessage(from, text) {
 
   switch (session.step) {
     case 'welcome':
-      // 1. Send welcome/select message
       await sendWhatsAppText(from, "Welcome! Please select a certificate:\n1. Free\n2. Paid");
       session.step = 'select_certificate';
       break;
@@ -91,7 +88,6 @@ async function handleUserMessage(from, text) {
       break;
 
     case 'ask_details':
-      // Expecting user to provide "Name, Number"
       if (text.includes(',')) {
         const [name, number] = text.split(',').map(s => s.trim());
         if (name && number) {
@@ -108,13 +104,10 @@ async function handleUserMessage(from, text) {
       break;
 
     case 'done':
-      // Conversation is done. Optionally reset the session
-      // userSessions[from] = null; // or some cleanup
       break;
 
     default:
       await sendWhatsAppText(from, "Something went wrong. Type 'Hello' or 'Hi' to restart.");
-      // Reset session if stuck
       userSessions[from] = { step: 'welcome' };
       break;
   }
@@ -125,8 +118,11 @@ async function handleUserMessage(from, text) {
  */
 async function sendWhatsAppText(to, message) {
   try {
+    const url = process.env.WHATSAPP_API_URL;
+    console.log("WHATSAPP_API_URL:", url);
+
     await axios.post(
-      process.env.WHATSAPP_API_URL,
+      url,
       {
         messaging_product: 'whatsapp',
         to,
