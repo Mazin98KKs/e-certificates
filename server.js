@@ -2,6 +2,10 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
+const cloudinary = require('cloudinary').v2;
+
+// Cloudinary configuration (reads CLOUDINARY_URL from environment variables)
+cloudinary.config(true);
 
 const app = express();
 app.use(bodyParser.json());
@@ -9,8 +13,15 @@ app.use(bodyParser.json());
 // In-memory user sessions
 const userSessions = {};
 
+// Map of certificates to Cloudinary public IDs
+const CERTIFICATE_PUBLIC_IDS = {
+  1: malgof_egqihg,
+  2: kfoo_ncybxx,
+  3: donothing_nvdhcx,
+};
+
 /**
- * 1) Webhook Verification Endpoint
+ * Webhook Verification Endpoint
  */
 app.get('/webhook', (req, res) => {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'mysecrettoken';
@@ -30,7 +41,7 @@ app.get('/webhook', (req, res) => {
 });
 
 /**
- * 2) Webhook for Incoming WhatsApp Messages
+ * Webhook for Incoming WhatsApp Messages
  */
 app.post('/webhook', async (req, res) => {
   if (req.body.object === 'whatsapp_business_account') {
@@ -68,10 +79,9 @@ async function handleUserMessage(from, text) {
 
   switch (session.step) {
     case 'welcome':
-      // Send message in Arabic with the three certificate options
       await sendWhatsAppText(
         from,
-        "اختر الشهادة المراد إرسالها:\n1. شهادة الملقوف\n2. شهادة الكفو\n3. شهادة اللي المكافح"
+        "اختر الشهادة المراد إرسالها:\n1. شهادة الملقوف\n2. شهادة الكفو\n3. شهادة اللي مايسوي شي"
       );
       session.step = 'select_certificate';
       break;
@@ -98,8 +108,8 @@ async function handleUserMessage(from, text) {
           session.recipientNumber = number;
           session.step = 'done';
 
-          // Send the certificate as a template message
-          await sendCertificateTemplate(from, number, name);
+          // Send the certificate image using Cloudinary and WhatsApp API
+          await sendCertificateImage(session.selectedCertificate, from, number, name);
 
           // Confirm to the sender
           await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
@@ -148,29 +158,37 @@ async function sendWhatsAppText(to, message) {
 }
 
 /**
- * Send the certificate template
+ * Send the certificate image via WhatsApp using Cloudinary
  */
-async function sendCertificateTemplate(sender, recipient, recipientName) {
+async function sendCertificateImage(selectedCertificate, sender, recipient, recipientName) {
   try {
-    const templateData = {
-      messaging_product: 'whatsapp',
-      to: recipient,
-      type: 'template',
-      template: {
-        name: 'gift',
-        language: { code: 'ar' },
-        components: [
-          {
-            type: 'body',
-            parameters: [{ type: 'text', text: recipientName }],
+    const publicId = CERTIFICATE_PUBLIC_IDS[selectedCertificate];
+    if (!publicId) {
+      throw new Error(`No Cloudinary public ID found for certificate ${selectedCertificate}`);
+    }
+
+    const imageUrl = cloudinary.url(publicId, {
+      transformation: [
+        {
+          overlay: {
+            font_family: "Arial",
+            font_size: 40,
+            text: recipientName,
           },
-        ],
-      },
-    };
+          gravity: "north",
+          y: 80,
+        },
+      ],
+    });
 
     await axios.post(
       process.env.WHATSAPP_API_URL,
-      templateData,
+      {
+        messaging_product: 'whatsapp',
+        to: recipient,
+        type: 'image',
+        image: { link: imageUrl },
+      },
       {
         headers: {
           Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
@@ -179,9 +197,9 @@ async function sendCertificateTemplate(sender, recipient, recipientName) {
       }
     );
 
-    console.log(`Sent certificate template 'gift' to ${recipient} with recipient name: ${recipientName}`);
+    console.log(`Sent certificate image to ${recipient}`);
   } catch (error) {
-    console.error('Error sending certificate template:', error.response?.data || error.message);
+    console.error('Error sending certificate image:', error.response?.data || error.message);
   }
 }
 
