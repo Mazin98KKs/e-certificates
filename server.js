@@ -124,8 +124,22 @@ async function handleUserMessage(from, text) {
 
     case 'confirm_send':
       if (/^نعم$/i.test(text.trim())) {
-        // Send the certificate using the "gift" template
-        await sendCertificateTemplate(from, session.recipientName);
+        // Send the certificate using the "gift" template with a header image
+        const certificateImageUrl = cloudinary.url(CERTIFICATE_PUBLIC_IDS[session.selectedCertificate], {
+          transformation: [
+            {
+              overlay: {
+                font_family: "Arial",
+                font_size: 40,
+                text: session.recipientName,
+              },
+              gravity: "center",
+              y: 0,
+            },
+          ],
+        });
+
+        await sendCertificateTemplate(from, session.recipientName, certificateImageUrl);
         session.certificatesSent++;
 
         await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
@@ -190,7 +204,7 @@ async function sendWhatsAppText(to, message) {
 /**
  * Send the certificate template using WhatsApp's "gift" template
  */
-async function sendCertificateTemplate(from, recipientName) {
+async function sendCertificateTemplate(from, recipientName, certificateImageUrl) {
   try {
     await axios.post(
       process.env.WHATSAPP_API_URL,
@@ -202,6 +216,17 @@ async function sendCertificateTemplate(from, recipientName) {
           name: 'gift',
           language: { code: 'ar' },
           components: [
+            {
+              type: 'header',
+              parameters: [
+                {
+                  type: 'image',
+                  image: {
+                    link: certificateImageUrl,
+                  },
+                },
+              ],
+            },
             {
               type: 'body',
               parameters: [
