@@ -5,11 +5,16 @@ const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
-// Cloudinary configuration (reads CLOUDINARY_URL from environment variables)
+// Cloudinary configuration
 cloudinary.config(true);
 
 const app = express();
 app.use(bodyParser.json());
+app.use(
+  bodyParser.raw({
+    type: 'application/json',
+  })
+);
 
 // In-memory user sessions
 const userSessions = {};
@@ -33,14 +38,14 @@ const FREE_CERTIFICATES = [1, 5];
 
 // Map of certificates to Stripe Price IDs
 const certificateToPriceMap = {
-  2: "price_1QlwCPBH45p3WHSsOJPIV4ck",
-  3: "price_1QlwBMBH45p3WHSsLhUpZIiJ",
-  4: "price_1QlwBhBH45p3WHSshaMTmMgO",
-  6: "price_1QlwB3BH45p3WHSsO1DoVyn3",
-  7: "price_1QlwAGBH45p3WHSst46YVwME",
-  8: "price_1QlwAiBH45p3WHSsmU4G4EXn",
-  9: "price_1QlwAUBH45p3WHSsyP56wBRN",
-  10: "price_1QlwAGBH45p3WHSst46YVwME",
+  2: "price_1Qlw3YBH45p3WHSs6t7GT3cc",
+  3: "price_1QlwCPBH45p3WHSsOJPIV4ck",
+  4: "price_1QlwBMBH45p3WHSsLhUpZIiJ",
+  6: "price_1QlwBhBH45p3WHSshaMTmMgO",
+  7: "price_1QlwCjBH45p3WHSsIkSlJpNl",
+  8: "price_1QlwB3BH45p3WHSsO1DoVyn3",
+  9: "price_1QlwAGBH45p3WHSst46YVwME",
+  10: "price_1QlwAiBH45p3WHSsmU4G4EXn",
 };
 
 /**
@@ -326,6 +331,135 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
     return null;
   }
 }
+
+/**
+ * Stripe Webhook Endpoint
+ * Listens for checkout.session.completed events and triggers the certificate sending
+ */
+app.post('/stripe-webhook', async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.error('Webhook signature verification failed:', err.message);
+    return res.sendStatus(400);
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+
+    const { senderNumber, recipientNumber, certificateId, recipientName } = session.metadata;
+
+    console.log(
+      `Payment completed! Sender: ${senderNumber}, Recipient: ${recipientNumber}, Certificate ID: ${certificateId}, Name: ${recipientName}`
+    );
+
+    // Send the certificate image
+    const certificateImageUrl = cloudinary.url(
+      CERTIFICATE_PUBLIC_IDS[certificateId],
+      {
+        transformation: [
+          {
+            overlay: {
+              font_family: "Arial",
+              font_size: 80,
+              text: recipientName,
+            },
+            gravity: "center",
+            y: 10,
+          },
+        ],
+      }
+    );
+
+    try {
+      // Send certificate to recipient
+      await axios.post(
+        process.env.WHATSAPP_API_URL,
+        {
+          messaging_product: 'whatsapp',
+          to: recipientNumber,
+          type: 'template',
+          template: {
+            name: 'gift',
+            language: { code: 'ar' },
+            components: [
+              {
+                type: 'header',
+                parameters: [
+                  {
+                    type: 'image',
+                    image: {
+                      link: certificateImageUrl,
+                    },
+                  },
+                ],
+              },
+              {
+                type: 'body',
+                parameters: [
+                  {
+                    type: 'text',
+                    text: recipientName,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      console.log(`Certificate sent to ${recipientNumber}`);
+    } catch (error) {
+      console.error(
+        `Failed to send certificate to ${recipientNumber}:`,
+        error.response?.data || error.message
+      );
+    }
+
+    // Send confirmation message to the sender
+    try {
+      await axios.post(
+        process.env.WHATSAPP_API_URL,
+        {
+          messaging_product: 'whatsapp',
+          to: senderNumber,
+          type: 'text',
+          text: {
+            body: `شكراً للدفع! الشهادة تم إرسالها بنجاح إلى ${recipientName}.`,
+          },
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      console.log(`Payment confirmation sent to ${senderNumber}`);
+    } catch (error) {
+      console.error(
+        `Failed to send confirmation to ${senderNumber}:`,
+        error.response?.data || error.message
+      );
+    }
+  }
+
+  res.sendStatus(200);
+});
 
 /**
  * Send a simple WhatsApp text message
