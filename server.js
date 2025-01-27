@@ -33,14 +33,14 @@ const FREE_CERTIFICATES = [1, 5];
 
 // Map of certificates to Stripe Price IDs
 const certificateToPriceMap = {
-  2: "prod_RfGaP70ZWxtguf", // Example Price ID
-  3: "price_1QlwCPBH45p3WHSsOJPIV4ck",
-  4: "price_1QlwBMBH45p3WHSsLhUpZIiJ",
-  6: "price_1QlwBhBH45p3WHSshaMTmMgO",
-  7: "prod_RfGkjAe1rx4hSx",
-  8: "price_1QlwB3BH45p3WHSsO1DoVyn3",
-  9: "price_1QlwAGBH45p3WHSst46YVwME",
-  10: "price_1QlwAiBH45p3WHSsmU4G4EXn",
+  2: "price_1QlwCPBH45p3WHSsOJPIV4ck",
+  3: "price_1QlwBMBH45p3WHSsLhUpZIiJ",
+  4: "price_1QlwBhBH45p3WHSshaMTmMgO",
+  6: "price_1QlwB3BH45p3WHSsO1DoVyn3",
+  7: "price_1QlwAGBH45p3WHSst46YVwME",
+  8: "price_1QlwAiBH45p3WHSsmU4G4EXn",
+  9: "price_1QlwAUBH45p3WHSsyP56wBRN",
+  10: "price_1QlwAGBH45p3WHSst46YVwME",
 };
 
 /**
@@ -247,7 +247,7 @@ async function sendCertificateImage(recipient, certificateId, recipientName) {
           text: recipientName,
         },
         gravity: "center",
-        y: 5,
+        y: 10,
       },
     ],
   });
@@ -324,6 +324,32 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
   } catch (error) {
     console.error('Error creating Stripe checkout session:', error.message);
     return null;
+  }
+}
+
+/**
+ * Send a simple WhatsApp text message
+ */
+async function sendWhatsAppText(to, message) {
+  try {
+    await axios.post(
+      process.env.WHATSAPP_API_URL,
+      {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'text',
+        text: { body: message },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+    console.log(`Sent text to ${to}: ${message}`);
+  } catch (error) {
+    console.error('Error sending WhatsApp text:', error.response?.data || error.message);
   }
 }
 
