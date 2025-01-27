@@ -3,6 +3,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 // Cloudinary configuration (reads CLOUDINARY_URL from environment variables)
 cloudinary.config(true);
@@ -25,7 +26,21 @@ const CERTIFICATE_PUBLIC_IDS = {
   8: "friendly_e7szzo",
   9: "kingnegative_ak81hp",
   10: "lier_hyuisy",
+};
 
+// Certificates 1 and 5 are free
+const FREE_CERTIFICATES = [1, 5];
+
+// Map of certificates to Stripe Price IDs
+const certificateToPriceMap = {
+  2: "prod_RfGaP70ZWxtguf", // Example Price ID
+  3: "price_1QlwCPBH45p3WHSsOJPIV4ck",
+  4: "price_1QlwBMBH45p3WHSsLhUpZIiJ",
+  6: "price_1QlwBhBH45p3WHSshaMTmMgO",
+  7: "prod_RfGkjAe1rx4hSx",
+  8: "price_1QlwB3BH45p3WHSsO1DoVyn3",
+  9: "price_1QlwAGBH45p3WHSst46YVwME",
+  10: "price_1QlwAiBH45p3WHSsmU4G4EXn",
 };
 
 /**
@@ -89,7 +104,6 @@ async function handleUserMessage(from, text) {
 
   switch (session.step) {
     case 'welcome':
-      // Use the "welcome" template instead of plain text
       await sendWelcomeTemplate(from);
       session.step = 'select_certificate';
       break;
@@ -124,7 +138,6 @@ async function handleUserMessage(from, text) {
       break;
 
     case 'ask_recipient_number':
-      // Validate number format (you can make this more rigorous)
       if (/^\d+$/.test(text.trim())) {
         session.recipientNumber = text.trim();
         session.step = 'confirm_send';
@@ -143,34 +156,34 @@ async function handleUserMessage(from, text) {
 
     case 'confirm_send':
       if (/^نعم$/i.test(text.trim())) {
-        // Generate the Cloudinary image URL with the recipient’s name
-        const certificateImageUrl = cloudinary.url(CERTIFICATE_PUBLIC_IDS[session.selectedCertificate], {
-          transformation: [
-            {
-              overlay: {
-                font_family: "Arial",
-                font_size: 80, // Larger font size for clarity
-                text: session.recipientName,
-              },
-              gravity: "center",
-              y: 2,
-            },
-          ],
-        });
+        if (FREE_CERTIFICATES.includes(session.selectedCertificate)) {
+          // Send certificate directly for free certificates
+          await sendCertificateImage(session.recipientNumber, session.selectedCertificate, session.recipientName);
+          session.certificatesSent++;
 
-        // Send the gift template with the Cloudinary image URL
-        await sendCertificateTemplate(session.recipientNumber, session.recipientName, certificateImageUrl);
-        session.certificatesSent++;
-
-        await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
-        session.step = 'ask_another';
-        await sendWhatsAppText(from, "هل ترغب في إرسال شهادة أخرى؟ (نعم/لا)");
+          await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
+          session.step = 'ask_another';
+          await sendWhatsAppText(from, "هل ترغب في إرسال شهادة أخرى؟ (نعم/لا)");
+        } else {
+          // Create Stripe checkout session for paid certificates
+          const stripeSessionUrl = await createStripeCheckoutSession(session.selectedCertificate, from, session.recipientNumber, session.recipientName);
+          if (stripeSessionUrl) {
+            session.paymentPending = true;
+            await sendWhatsAppText(from, `لإتمام الدفع، الرجاء زيارة الرابط التالي: ${stripeSessionUrl}`);
+            session.step = 'await_payment';
+          }
+        }
       } else if (/^لا$/i.test(text.trim())) {
         await sendWhatsAppText(from, "تم إنهاء الجلسة. شكراً.");
         userSessions[from] = null;
       } else {
         await sendWhatsAppText(from, "يرجى الرد بـ (نعم/لا).");
       }
+      break;
+
+    case 'await_payment':
+      // Wait for payment confirmation via Stripe webhook (handled separately)
+      await sendWhatsAppText(from, "ننتظر تأكيد الدفع...");
       break;
 
     case 'ask_another':
@@ -193,7 +206,7 @@ async function handleUserMessage(from, text) {
 }
 
 /**
- * Send a template named "welcome" (Arabic) with 10 certificate options
+ * Send a welcome template
  */
 async function sendWelcomeTemplate(to) {
   try {
@@ -222,35 +235,23 @@ async function sendWelcomeTemplate(to) {
 }
 
 /**
- * Send a text message
+ * Send the certificate image
  */
-async function sendWhatsAppText(to, message) {
-  try {
-    await axios.post(
-      process.env.WHATSAPP_API_URL,
+async function sendCertificateImage(recipient, certificateId, recipientName) {
+  const certificateImageUrl = cloudinary.url(CERTIFICATE_PUBLIC_IDS[certificateId], {
+    transformation: [
       {
-        messaging_product: 'whatsapp',
-        to,
-        type: 'text',
-        text: { body: message },
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
-          'Content-Type': 'application/json',
+        overlay: {
+          font_family: "Arial",
+          font_size: 80,
+          text: recipientName,
         },
-      }
-    );
-    console.log(`Sent text to ${to}: ${message}`);
-  } catch (error) {
-    console.error('Error sending WhatsApp text:', error.response?.data || error.message);
-  }
-}
+        gravity: "center",
+        y: 5,
+      },
+    ],
+  });
 
-/**
- * Send the certificate template using WhatsApp's "gift" template
- */
-async function sendCertificateTemplate(recipient, recipientName, certificateImageUrl) {
   try {
     await axios.post(
       process.env.WHATSAPP_API_URL,
@@ -295,6 +296,34 @@ async function sendCertificateTemplate(recipient, recipientName, certificateImag
     console.log(`Template 'gift' sent to ${recipient} with recipient name: ${recipientName}`);
   } catch (error) {
     console.error('Error sending WhatsApp template:', error.response?.data || error.message);
+  }
+}
+
+/**
+ * Create a Stripe checkout session for paid certificates
+ */
+async function createStripeCheckoutSession(certificateId, senderNumber, recipientNumber, recipientName) {
+  const priceId = certificateToPriceMap[certificateId];
+  if (!priceId) {
+    console.error(`No Stripe price ID found for certificate ${certificateId}`);
+    return null;
+  }
+
+  try {
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [
+        { price: priceId, quantity: 1 },
+      ],
+      mode: 'payment',
+      success_url: `https://your-server.com/payment-success?sender=${senderNumber}&recipient=${recipientNumber}&certificate=${certificateId}&name=${encodeURIComponent(recipientName)}`,
+      cancel_url: `https://your-server.com/payment-cancel`,
+    });
+
+    return session.url;
+  } catch (error) {
+    console.error('Error creating Stripe checkout session:', error.message);
+    return null;
   }
 }
 
