@@ -15,9 +15,17 @@ const userSessions = {};
 
 // Map of certificates to Cloudinary public IDs
 const CERTIFICATE_PUBLIC_IDS = {
-  1: "malgof_egqihg",
-  2: "kfoo_ncybxx",
-  3: "donothing_nvdhcx",
+  1: "bestfriend_aamfqh",
+  2: "malgof_egqihg",
+  3: "kfoo_ncybxx",
+  4: "lazy_vndi9i",
+  5: "Mokaf7_vetjxx",
+  6: "donothing_nvdhcx",
+  7: "knoweverything_vppbsa",
+  8: "friendly_e7szzo",
+  9: "kingnegative_ak81hp",
+  10: "lier_hyuisy",
+
 };
 
 /**
@@ -81,60 +89,71 @@ async function handleUserMessage(from, text) {
 
   switch (session.step) {
     case 'welcome':
-      await sendWhatsAppText(
-        from,
-        "اختر الشهادة المراد إرسالها:\n1. شهادة الملقوف\n2. شهادة الكفو\n3. شهادة اللي مايسوي شي"
-      );
+      // Use the "welcome" template instead of plain text
+      await sendWelcomeTemplate(from);
       session.step = 'select_certificate';
       break;
 
     case 'select_certificate':
       const choice = parseInt(text.trim(), 10);
-      if (choice >= 1 && choice <= 3) {
+      if (choice >= 1 && choice <= 10) {
         session.selectedCertificate = choice;
-        session.step = 'ask_details';
-        await sendWhatsAppText(
-          from,
-          "الرجاء إدخال اسم ورقم المستلم بصيغة: الاسم, الرقم\nمثال: أحمد, 123456789"
-        );
+        session.step = 'ask_recipient_name';
+
+        // Ask for recipient's name first
+        await sendWhatsAppText(from, "وش اسم الشخص اللي ودك ترسله الشهاده");
       } else {
-        await sendWhatsAppText(from, "يرجى اختيار رقم صحيح من 1 إلى 3.");
+        await sendWhatsAppText(from, "يرجى اختيار رقم صحيح من 1 إلى 10.");
       }
       break;
 
-    case 'ask_details':
-      if (text.includes(',')) {
-        const [name, number] = text.split(',').map((s) => s.trim());
-        if (name && number) {
-          session.recipientName = name;
-          session.recipientNumber = number;
-          session.step = 'confirm_send';
+    case 'ask_recipient_name':
+      if (text.trim()) {
+        session.recipientName = text.trim();
+        session.step = 'ask_recipient_number';
 
-          await sendWhatsAppText(
-            from,
-            `سيتم إرسال الشهادة إلى ${name}. هل تريد إرسالها الآن؟ (نعم/لا)`
-          );
-        } else {
-          await sendWhatsAppText(from, "يرجى إرسال التفاصيل بالصيغ المرفقة.");
-        }
+        // Ask for recipient's number
+        await sendWhatsAppText(
+          from,
+          "ادخل رقم واتساب المستلم مع رمز الدولة \n" +
+          "مثال: \n  عمان 96890000000 \n  966500000000 السعودية"
+        );
       } else {
-        await sendWhatsAppText(from, "يرجى إرسال التفاصيل بالصيغ المرفقة.");
+        await sendWhatsAppText(from, "يرجى إدخال اسم صحيح.");
+      }
+      break;
+
+    case 'ask_recipient_number':
+      // Validate number format (you can make this more rigorous)
+      if (/^\d+$/.test(text.trim())) {
+        session.recipientNumber = text.trim();
+        session.step = 'confirm_send';
+
+        await sendWhatsAppText(
+          from,
+          `سيتم إرسال الشهادة إلى ${session.recipientName}. هل تريد إرسالها الآن؟ (نعم/لا)`
+        );
+      } else {
+        await sendWhatsAppText(
+          from,
+          "يرجى إدخال رقم صحيح يشمل رمز الدولة."
+        );
       }
       break;
 
     case 'confirm_send':
       if (/^نعم$/i.test(text.trim())) {
-        // Generate the Cloudinary image URL with the recipient’s name in a larger font
+        // Generate the Cloudinary image URL with the recipient’s name
         const certificateImageUrl = cloudinary.url(CERTIFICATE_PUBLIC_IDS[session.selectedCertificate], {
           transformation: [
             {
               overlay: {
                 font_family: "Arial",
-                font_size: 80, // Doubled font size
+                font_size: 80, // Larger font size for clarity
                 text: session.recipientName,
               },
               gravity: "center",
-              y: 0,
+              y: 2,
             },
           ],
         });
@@ -157,10 +176,7 @@ async function handleUserMessage(from, text) {
     case 'ask_another':
       if (/^نعم$/i.test(text.trim())) {
         session.step = 'welcome';
-        await sendWhatsAppText(
-          from,
-          "اختر الشهادة المراد إرسالها:\n1. شهادة الملقوف\n2. شهادة الكفو\n3. شهادة اللي مايسوي شي"
-        );
+        await sendWelcomeTemplate(from);
       } else if (/^لا$/i.test(text.trim())) {
         await sendWhatsAppText(from, "تم إنهاء الجلسة. شكراً.");
         userSessions[from] = null;
@@ -177,7 +193,36 @@ async function handleUserMessage(from, text) {
 }
 
 /**
- * Send a simple WhatsApp text message
+ * Send a template named "welcome" (Arabic) with 10 certificate options
+ */
+async function sendWelcomeTemplate(to) {
+  try {
+    await axios.post(
+      process.env.WHATSAPP_API_URL,
+      {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'template',
+        template: {
+          name: 'welcome',
+          language: { code: 'ar' },
+        },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+    console.log(`Template 'welcome' sent to ${to}`);
+  } catch (error) {
+    console.error('Error sending WhatsApp template:', error.response?.data || error.message);
+  }
+}
+
+/**
+ * Send a text message
  */
 async function sendWhatsAppText(to, message) {
   try {
