@@ -9,7 +9,7 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 cloudinary.config(true);
 
 const app = express();
-app.use(bodyParser.json());
+
 app.use(
   bodyParser.raw({
     type: 'application/json',
