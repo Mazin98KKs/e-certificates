@@ -1,19 +1,12 @@
-/*************************************************************
- * logger.js
- * A simple logger utility. Feel free to replace with 
- * Winston, Pino, or any other logging library as needed.
- *************************************************************/
+const winston = require('winston');
 
-const logger = {
-  info: (...args) => {
-    console.log('[INFO]', ...args);
-  },
-  error: (...args) => {
-    console.error('[ERROR]', ...args);
-  },
-  warn: (...args) => {
-    console.warn('[WARN]', ...args);
-  },
-};
+const logger = winston.createLogger({
+  level: 'debug',
+  format: winston.format.json(),
+  transports: [
+    new winston.transports.Console(),
+    new winston.transports.File({ filename: 'combined.log' }),
+  ],
+});
 
 module.exports = { logger };

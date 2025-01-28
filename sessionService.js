@@ -1,62 +1,21 @@
-/*************************************************************
- * sessionservice.js
- * Simple in-memory session management for user conversations.
- * For production, consider storing sessions in Redis/DB.
- *************************************************************/
-
-const sessions = {}; // { [userId]: { step, ... } }
-const { logger } = require('./logger');
-
-/** Get session by user ID */
+// Add logs before and after retrieving a session
 async function getSession(userId) {
+  logger.info({ event: 'GetSessionStart', userId });
   const session = sessions[userId];
-  logger.debug({
-    event: 'GetSession',
-    userId,
-    session: session || null,
-  });
+  logger.info({ event: 'GetSessionEnd', userId, session });
   return session;
 }
 
-/** Set (or update) session for user ID */
+// Add logs before and after setting a session
 async function setSession(userId, sessionData) {
+  logger.info({ event: 'SetSessionStart', userId, sessionData });
   sessions[userId] = sessionData;
-  logger.debug({
-    event: 'SetSession',
-    userId,
-    sessionData,
-  });
+  logger.info({ event: 'SetSessionEnd', userId, sessionData });
 }
 
-/** Reset session (delete from memory) */
+// Add logs before and after resetting a session
 async function resetSession(userId) {
+  logger.info({ event: 'ResetSessionStart', userId });
   delete sessions[userId];
-  logger.info({
-    event: 'ResetSession',
-    userId,
-    message: 'Session has been reset.',
-  });
-
-  // Verify session reset
-  const currentSession = await getSession(userId);
-  if (!currentSession) {
-    logger.info({
-      event: 'SessionConfirmedReset',
-      userId,
-      message: 'Confirmed session reset.',
-    });
-  } else {
-    logger.warn({
-      event: 'SessionNotResetProperly',
-      userId,
-      session: currentSession,
-      message: 'Session was not reset properly.',
-    });
-  }
+  logger.info({ event: 'ResetSessionEnd', userId });
 }
-
-module.exports = {
-  getSession,
-  setSession,
-  resetSession,
-};

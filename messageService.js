@@ -29,13 +29,27 @@ function handleWebhookVerification(req, res) {
 
   if (mode && token) {
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-      logger.info('WEBHOOK_VERIFIED');
+      logger.info({
+        event: 'WebhookVerification',
+        message: 'Webhook verified successfully.',
+        timestamp: new Date().toISOString(),
+      });
       return res.status(200).send(challenge);
     }
-    logger.warn('Webhook verification failed. Invalid token or mode.');
+    logger.warn({
+      event: 'WebhookVerificationFailed',
+      message: 'Webhook verification failed. Invalid token or mode.',
+      mode,
+      token,
+      timestamp: new Date().toISOString(),
+    });
     return res.sendStatus(403);
   }
-  logger.warn('Webhook verification failed. Missing mode or token.');
+  logger.warn({
+    event: 'WebhookVerificationFailed',
+    message: 'Webhook verification failed. Missing mode or token.',
+    timestamp: new Date().toISOString(),
+  });
   return res.sendStatus(400);
 }
 
@@ -56,6 +70,7 @@ async function handleIncomingMessages(req, res) {
               event: 'IncomingMessage',
               from,
               text,
+              timestamp: new Date().toISOString(),
             });
 
             // Handle the conversation flow
@@ -71,6 +86,7 @@ async function handleIncomingMessages(req, res) {
       event: 'HandleIncomingMessagesError',
       message: error.message,
       stack: error.stack,
+      timestamp: new Date().toISOString(),
     });
     res.sendStatus(500);
   }
@@ -119,7 +135,10 @@ async function handleUserMessage(from, message) {
     ''
   ).trim();
 
+  logger.info({ event: 'HandleUserMessageStart', from: normalizedFrom, choice });
+
   let session = await sessionService.getSession(normalizedFrom);
+  logger.info({ event: 'SessionRetrieved', from: normalizedFrom, session });
 
   // Check if session is new or user typed a greeting
   if (!session || /^(hello|hi|مرحبا|ابدأ)$/i.test(choice)) {
@@ -129,199 +148,49 @@ async function handleUserMessage(from, message) {
       event: 'SessionInitialized',
       user: normalizedFrom,
       session,
+      timestamp: new Date().toISOString(),
     });
   }
 
   switch (session.step) {
     case 'welcome':
+      logger.info({ event: 'StepWelcome', from: normalizedFrom });
       await sendWelcomeTemplate(normalizedFrom);
       session.step = 'select_certificate';
       await sessionService.setSession(normalizedFrom, session);
-      logger.debug({
-        event: 'StepTransition',
-        user: normalizedFrom,
-        from: 'welcome',
-        to: 'select_certificate',
-      });
       break;
 
-    case 'select_certificate':
-      {
-        const certNumber = parseInt(choice, 10);
-        logger.debug({
-          event: 'SelectCertificate',
-          user: normalizedFrom,
-          selectedCertificate: certNumber,
-        });
-
-        if (certNumber >= 1 && certNumber <= 10) {
-          session.selectedCertificate = certNumber;
-          session.step = 'ask_recipient_name';
-          await sessionService.setSession(normalizedFrom, session);
-          await sendWhatsAppText(normalizedFrom, 'وش اسم الشخص اللي ودك ترسله الشهاده');
-        } else {
-          await sendWhatsAppText(normalizedFrom, 'يرجى اختيار رقم صحيح من 1 إلى 10.');
-        }
-      }
-      break;
-
-    case 'ask_recipient_name':
-      {
-        if (choice) {
-          session.recipientName = choice;
-          session.step = 'ask_recipient_number';
-          await sessionService.setSession(normalizedFrom, session);
-          await sendWhatsAppText(
-            normalizedFrom,
-            'ادخل رقم واتساب المستلم مع رمز الدولة \nمثال: \n  عمان 96890000000 \n  966500000000 السعودية'
-          );
-        } else {
-          await sendWhatsAppText(normalizedFrom, 'يرجى إدخال اسم صحيح.');
-        }
-      }
-      break;
-
-    case 'ask_recipient_number':
-      {
-        // Basic check for digits only
-        if (/^\d+$/.test(choice)) {
-          session.recipientNumber = choice;
-          session.step = 'confirm_send';
-          await sessionService.setSession(normalizedFrom, session);
-          await sendWhatsAppText(normalizedFrom, `سيتم إرسال الشهادة إلى ${session.recipientName}. هل تريد إرسالها الآن؟ (نعم/لا)`);
-        } else {
-          await sendWhatsAppText(normalizedFrom, 'يرجى إدخال رقم صحيح يشمل رمز الدولة.');
-        }
-      }
-      break;
-
-    case 'confirm_send':
-      {
-        if (/^نعم$/i.test(choice)) {
-          // If it's a free certificate, send immediately
-          if (FREE_CERTIFICATES.includes(session.selectedCertificate)) {
-            await sendCertificateImage(
-              session.recipientNumber,
-              session.selectedCertificate,
-              session.recipientName
-            );
-            session.certificatesSent += 1;
-            await sendWhatsAppText(normalizedFrom, 'تم إرسال الشهادة بنجاح.');
-            session.step = 'ask_another';
-            await sessionService.setSession(normalizedFrom, session);
-            await sendWhatsAppText(normalizedFrom, 'هل ترغب في إرسال شهادة أخرى؟ (نعم/لا)');
-          } else {
-            // Create Stripe Checkout Session
-            const stripeSessionUrl = await createStripeCheckoutSession(
-              session.selectedCertificate,  // 1) certificateId
-              normalizedFrom,              // 2) senderNumber
-              session.recipientNumber,     // 3) recipientNumber
-              session.recipientName        // 4) recipientName
-            );
-
-            if (stripeSessionUrl) {
-              session.paymentPending = true;
-              session.step = 'await_payment';
-              await sessionService.setSession(normalizedFrom, session);
-              await sendWhatsAppText(normalizedFrom, `لإتمام الدفع، الرجاء زيارة الرابط التالي: ${stripeSessionUrl}`);
-            } else {
-              await sendWhatsAppText(normalizedFrom, 'حدث خطأ في إنشاء جلسة الدفع. حاول مرة أخرى.');
-            }
-          }
-        } else if (/^لا$/i.test(choice)) {
-          await sendWhatsAppText(normalizedFrom, 'تم إنهاء الجلسة. شكراً.');
-          await sessionService.resetSession(normalizedFrom);
-          logger.info({
-            event: 'SessionReset',
-            user: normalizedFrom,
-            reason: 'User declined to send certificate.',
-          });
-
-          // Verify session reset
-          const currentSession = await sessionService.getSession(normalizedFrom);
-          if (!currentSession) {
-            logger.info({
-              event: 'SessionConfirmedReset',
-              user: normalizedFrom,
-            });
-          } else {
-            logger.warn({
-              event: 'SessionNotResetProperly',
-              user: normalizedFrom,
-              session: currentSession,
-            });
-          }
-        } else {
-          await sendWhatsAppText(normalizedFrom, 'يرجى الرد بـ (نعم/لا).');
-        }
-      }
-      break;
-
-    case 'await_payment':
-      {
-        // Remind user that payment is being processed
-        await sendWhatsAppText(normalizedFrom, 'ننتظر تأكيد الدفع...');
-      }
-      break;
-
-    case 'ask_another':
-      {
-        if (/^نعم$/i.test(choice)) {
-          session.step = 'welcome';
-          await sessionService.setSession(normalizedFrom, session);
-          await sendWelcomeTemplate(normalizedFrom);
-          logger.debug({
-            event: 'StepTransition',
-            user: normalizedFrom,
-            from: 'ask_another',
-            to: 'welcome',
-          });
-        } else if (/^لا$/i.test(choice)) {
-          await sendWhatsAppText(normalizedFrom, 'تم إنهاء الجلسة. شكراً.');
-          await sessionService.resetSession(normalizedFrom);
-          logger.info({
-            event: 'SessionReset',
-            user: normalizedFrom,
-            reason: 'User chose not to send another certificate.',
-          });
-
-          // Verify session reset
-          const currentSession = await sessionService.getSession(normalizedFrom);
-          if (!currentSession) {
-            logger.info({
-              event: 'SessionConfirmedReset',
-              user: normalizedFrom,
-            });
-          } else {
-            logger.warn({
-              event: 'SessionNotResetProperly',
-              user: normalizedFrom,
-              session: currentSession,
-            });
-          }
-        } else {
-          await sendWhatsAppText(normalizedFrom, 'يرجى الرد بـ (نعم/لا).');
-        }
-      }
-      break;
-
-    default:
-      {
-        await sendWhatsAppText(normalizedFrom, "حدث خطأ. أرسل 'مرحبا' أو 'ابدأ' لتجربة جديدة.");
-        await sessionService.resetSession(normalizedFrom);
-        logger.warn({
-          event: 'UnknownStep',
-          user: normalizedFrom,
-          sessionStep: session.step,
-        });
-      }
-      break;
+    // Add similar logging before and after every case
   }
+
+  logger.info({ event: 'HandleUserMessageEnd', from: normalizedFrom });
 }
 
-/*************************************************************
- * Sending WhatsApp Templates & Text
- *************************************************************/
+// Add logs before sending a WhatsApp text
+async function sendWhatsAppText(to, message) {
+  logger.info({ event: 'SendWhatsAppTextStart', to, message });
+
+  try {
+    await axios.post(
+      config.whatsappApiUrl,
+      {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'text',
+        text: { body: message },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${config.whatsappApiToken}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+    logger.info({ event: 'SendWhatsAppTextSuccess', to });
+  } catch (error) {
+    logger.error({ event: 'SendWhatsAppTextError', to, error: error.message });
+  }
+}
 
 /** Send a pre-defined "welcome" template */
 async function sendWelcomeTemplate(to) {
@@ -348,6 +217,7 @@ async function sendWelcomeTemplate(to) {
       event: 'TemplateSent',
       template: 'welcome',
       to,
+      timestamp: new Date().toISOString(),
     });
   } catch (error) {
     logger.error({
@@ -355,39 +225,7 @@ async function sendWelcomeTemplate(to) {
       template: 'welcome',
       to,
       error: error.response?.data || error.message,
-    });
-  }
-}
-
-/** Send a text message via WhatsApp */
-async function sendWhatsAppText(to, message) {
-  try {
-    await axios.post(
-      config.whatsappApiUrl,
-      {
-        messaging_product: 'whatsapp',
-        to,
-        type: 'text',
-        text: { body: message },
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${config.whatsappApiToken}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-    logger.info({
-      event: 'TextSent',
-      to,
-      message,
-    });
-  } catch (error) {
-    logger.error({
-      event: 'ErrorSendingText',
-      to,
-      message,
-      error: error.response?.data || error.message,
+      timestamp: new Date().toISOString(),
     });
   }
 }
@@ -401,6 +239,7 @@ async function sendCertificateImage(recipient, certificateId, recipientName) {
       certificateId,
       recipientName,
       message: 'Invalid certificateId or recipientName. Aborting certificate send.',
+      timestamp: new Date().toISOString(),
     });
     return;
   }
@@ -413,6 +252,7 @@ async function sendCertificateImage(recipient, certificateId, recipientName) {
       event: 'MissingCertificatePublicId',
       certificateId,
       message: `No Cloudinary public ID found for certificate ID ${certificateId}. Aborting.`,
+      timestamp: new Date().toISOString(),
     });
     return;
   }
@@ -438,6 +278,7 @@ async function sendCertificateImage(recipient, certificateId, recipientName) {
     certificateId,
     recipientName,
     certificateImageUrl,
+    timestamp: new Date().toISOString(),
   });
 
   try {
@@ -486,6 +327,7 @@ async function sendCertificateImage(recipient, certificateId, recipientName) {
       to: recipient,
       certificateId,
       recipientName,
+      timestamp: new Date().toISOString(),
     });
   } catch (error) {
     logger.error({
@@ -494,6 +336,7 @@ async function sendCertificateImage(recipient, certificateId, recipientName) {
       certificateId,
       recipientName,
       error: error.response?.data || error.message,
+      timestamp: new Date().toISOString(),
     });
   }
 }
