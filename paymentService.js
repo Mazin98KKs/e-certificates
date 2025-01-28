@@ -73,7 +73,7 @@ async function handleStripeWebhook(req, res) {
   let event;
 
   try {
-    event = stripe.webhooks.constructEvent(req.body, sig, config.stripeWebhookSecret);
+    event = stripeClient.webhooks.constructEvent(req.body, sig, config.stripeWebhookSecret);
   } catch (err) {
     logger.error('Signature verification error:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
@@ -81,11 +81,17 @@ async function handleStripeWebhook(req, res) {
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-    const { senderNumber, recipientNumber, certificateId, recipientName } = session.metadata;
+    const { senderNumber, recipientNumber, certificateId, recipientName } = session.metadata || {};
 
-    logger.info(`Payment completed! Sender: ${senderNumber}, Recipient: ${recipientNumber}`);
+    // If metadata is missing or partial, skip to avoid the Cloudinary error
+    if (!senderNumber || !recipientNumber || !certificateId || !recipientName) {
+      logger.warn('checkout.session.completed event has missing metadata. Skipping certificate sending.');
+      return res.sendStatus(200);
+    }
 
-    // 1) Send the certificate to recipient
+    logger.info(`Payment completed! Sender: ${senderNumber}, Recipient: ${recipientNumber}, Certificate ID: ${certificateId}, Name: ${recipientName}`);
+
+    // 1) Send the certificate to the recipient
     await sendCertificateImage(recipientNumber, certificateId, recipientName);
 
     // 2) Notify the sender
@@ -96,7 +102,9 @@ async function handleStripeWebhook(req, res) {
           messaging_product: 'whatsapp',
           to: senderNumber,
           type: 'text',
-          text: { body: `شكراً للدفع! الشهادة تم إرسالها بنجاح إلى ${recipientName}.` },
+          text: {
+            body: `شكراً للدفع! الشهادة تم إرسالها بنجاح إلى ${recipientName}.`,
+          },
         },
         {
           headers: {
@@ -109,20 +117,16 @@ async function handleStripeWebhook(req, res) {
       logger.error(`Failed to send confirmation to ${senderNumber}:`, error.response?.data || error.message);
     }
 
-    // 3) Update the user's session to avoid "ننتظر تأكيد الدفع..." again
-    // << NEW LINES >>
-    const senderSession = sessionService.getSession(senderNumber);
-    if (senderSession) {
-      senderSession.step = 'ask_another';  // or 'welcome'
-      senderSession.paymentPending = false;
-      sessionService.setSession(senderNumber, senderSession);
-    }
+    // 3) RESET the session immediately after success to end conversation
+    sessionService.resetSession(senderNumber);
+    logger.info(`Session reset for ${senderNumber}`);
   }
 
   res.sendStatus(200);
 }
 
-/*************************************************************
+
+*************************************************************
  * Exports
  *************************************************************/
 module.exports = {
