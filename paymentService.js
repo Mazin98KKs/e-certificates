@@ -77,8 +77,8 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
 }
 
 /**
- * Handle Stripe webhook for checkout.session.completed
- * This is where we send the certificate to the recipient.
+ * Handle Stripe webhook for checkout.session.completed and checkout.session.async_payment_succeeded
+ * This is where we send the certificate to the recipient and reset the user session.
  */
 async function handleStripeWebhook(req, res) {
   const sig = req.headers['stripe-signature'];
@@ -92,20 +92,26 @@ async function handleStripeWebhook(req, res) {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  // Check if the event type is one we care about
+  if (!['checkout.session.completed', 'checkout.session.async_payment_succeeded'].includes(event.type)) {
+    logger.warn(`Unhandled event type ${event.type}`);
+    return res.sendStatus(200);
+  }
+
   // Idempotency check: prevent processing the same event multiple times
   if (processedEvents.has(event.id)) {
     logger.warn(`Duplicate event received: ${event.id}. Skipping processing.`);
     return res.sendStatus(200);
   }
 
-  // Handle the checkout.session.completed event
-  if (event.type === 'checkout.session.completed') {
+  // Handle the relevant event types
+  if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
     const session = event.data.object;
     const { senderNumber, recipientNumber, certificateId, recipientName } = session.metadata || {};
 
     // Check if all required metadata exists
     if (!senderNumber || !recipientNumber || !certificateId || !recipientName) {
-      logger.warn('checkout.session.completed event has missing metadata. Skipping certificate sending.');
+      logger.warn('Webhook event has missing metadata. Skipping certificate sending.');
       return res.sendStatus(200);
     }
 
@@ -147,8 +153,6 @@ async function handleStripeWebhook(req, res) {
       logger.error(`Error during webhook processing for sender ${senderNumber}:`, error.response?.data || error.message);
       // Optionally, handle retries or notify admins
     }
-  } else {
-    logger.warn(`Unhandled event type ${event.type}`);
   }
 
   // Respond to Stripe to acknowledge receipt of the event
