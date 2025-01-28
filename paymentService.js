@@ -1,38 +1,131 @@
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const { CERTIFICATE_PUBLIC_IDS } = require('./config');
-const { sendTextMessage } = require('./messageService');
+/*************************************************************
+ * paymentservice.js
+ * Handles Stripe checkout session creation and webhook events.
+ *************************************************************/
+
+const stripe = require('stripe');
+const axios = require('axios');
+
+const config = require('./config');
+const { logger } = require('./logger');
+const { sendCertificateImage } = require('./messageservice');
+
+// Initialize Stripe
+const stripeClient = stripe(config.stripeSecretKey);
+
+// Map of certificate to Stripe Price IDs
+const certificateToPriceMap = {
+  2: 'price_1Qlw3YBH45p3WHSs6t7GT3cc',
+  3: 'price_1QlwCPBH45p3WHSsOJPIV4ck',
+  4: 'price_1QlwBMBH45p3WHSsLhUpZIiJ',
+  6: 'price_1QlwBhBH45p3WHSshaMTmMgO',
+  7: 'price_1QlwCjBH45p3WHSsIkSlJpNl',
+  8: 'price_1QlwB3BH45p3WHSsO1DoVyn3',
+  9: 'price_1QlwAGBH45p3WHSst46YVwME',
+  10: 'price_1QlwAiBH45p3WHSsmU4G4EXn',
+};
 
 /**
- * Handle Stripe webhook events
- * @param {object} req - The Express request object
- * @param {object} res - The Express response object
+ * Create Stripe checkout session for paid certificates
+ * Returns the URL for the user to complete payment.
+ */
+async function createStripeCheckoutSession(certificateId, senderNumber, recipientNumber, recipientName) {
+  const priceId = certificateToPriceMap[certificateId];
+  if (!priceId) {
+    logger.error(`No Stripe price found for certificate ${certificateId}.`);
+    return null;
+  }
+
+  try {
+    const session = await stripeClient.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [
+        { price: priceId, quantity: 1 },
+      ],
+      mode: 'payment',
+      metadata: {
+        senderNumber,
+        recipientNumber,
+        certificateId,
+        recipientName,
+      },
+      // On success/cancel, you may want to direct back to your site or a WA link
+      success_url: `https://wa.me/16033040262`,
+      cancel_url: `https://wa.me/16033040262`,
+    });
+
+    logger.info(`Stripe session created for certificate ${certificateId}, sender ${senderNumber}`);
+    return session.url;
+  } catch (error) {
+    logger.error('Error creating Stripe checkout session:', error.message);
+    return null;
+  }
+}
+
+/**
+ * Handle Stripe webhook for checkout.session.completed
+ * This is where we send the certificate to the recipient.
  */
 async function handleStripeWebhook(req, res) {
   const sig = req.headers['stripe-signature'];
-
   let event;
+
   try {
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    event = stripeClient.webhooks.constructEvent(
+      req.body,
+      sig,
+      config.stripeWebhookSecret
+    );
   } catch (err) {
-    console.error('Webhook signature verification failed:', err.message);
-    return res.sendStatus(400);
+    logger.error('Signature verification error:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  // If the event type is checkout.session.completed, handle it
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-
     const { senderNumber, recipientNumber, certificateId, recipientName } = session.metadata;
 
-    console.log(`Payment completed! Sender: ${senderNumber}, Recipient: ${recipientNumber}, Certificate ID: ${certificateId}, Name: ${recipientName}`);
+    logger.info(`Payment completed for sender: ${senderNumber}, recipient: ${recipientNumber}, certificate: ${certificateId}`);
 
+    // Send certificate to the recipient
+    await sendCertificateImage(recipientNumber, certificateId, recipientName);
+
+    // Send confirmation to the sender
     try {
-      await sendTextMessage(recipientNumber, `شكراً للدفع! الشهادة تم إرسالها بنجاح إلى ${recipientName}.`);
+      await axios.post(
+        config.whatsappApiUrl,
+        {
+          messaging_product: 'whatsapp',
+          to: senderNumber,
+          type: 'text',
+          text: {
+            body: `شكراً للدفع! الشهادة تم إرسالها بنجاح إلى ${recipientName}.`,
+          },
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${config.whatsappApiToken}`,
+          },
+        }
+      );
+      logger.info(`Payment confirmation sent to sender ${senderNumber}`);
     } catch (error) {
-      console.error('Error sending payment confirmation:', error.message);
+      logger.error(
+        `Failed to send payment confirmation to ${senderNumber}:`,
+        error.response?.data || error.message
+      );
     }
   }
 
+  // Acknowledge the webhook
   res.sendStatus(200);
 }
 
-module.exports = { handleStripeWebhook };
+/*************************************************************
+ * Exports
+ *************************************************************/
+module.exports = {
+  createStripeCheckoutSession,
+  handleStripeWebhook,
+};

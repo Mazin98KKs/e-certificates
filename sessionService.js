@@ -1,30 +1,28 @@
-// In-memory user sessions
-const userSessions = {};
+/*************************************************************
+ * sessionservice.js
+ * Simple in-memory session management for user conversations.
+ * For production, consider storing sessions in Redis/DB.
+ *************************************************************/
 
-/**
- * Get a session by user ID
- * @param {string} userId - The ID of the user
- * @returns {object|null} The user's session or null if not found
- */
+const sessions = {}; // { [userId]: { step, ... } }
+
+/** Get session by user ID */
 function getSession(userId) {
-  return userSessions[userId] || null;
+  return sessions[userId];
 }
 
-/**
- * Set a session for a user
- * @param {string} userId - The ID of the user
- * @param {object} sessionData - The session data to store
- */
+/** Set (or update) session for user ID */
 function setSession(userId, sessionData) {
-  userSessions[userId] = sessionData;
+  sessions[userId] = sessionData;
 }
 
-/**
- * Delete a session for a user
- * @param {string} userId - The ID of the user
- */
-function deleteSession(userId) {
-  delete userSessions[userId];
+/** Reset session (delete from memory) */
+function resetSession(userId) {
+  delete sessions[userId];
 }
 
-module.exports = { getSession, setSession, deleteSession };
+module.exports = {
+  getSession,
+  setSession,
+  resetSession,
+};

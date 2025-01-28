@@ -1,11 +1,19 @@
-/**
- * Log a message to the console
- * @param {string} level - The log level (info, warn, error)
- * @param {string} message - The message to log
- * @param {object} [meta] - Additional metadata to log
- */
-function log(level, message, meta = {}) {
-  console.log(`[${level.toUpperCase()}] ${message}`, meta);
-}
+/*************************************************************
+ * logger.js
+ * A simple logger utility. Feel free to replace with 
+ * Winston, Pino, or any other logging library as needed.
+ *************************************************************/
 
-module.exports = { log };
+const logger = {
+  info: (...args) => {
+    console.log('[INFO]', ...args);
+  },
+  error: (...args) => {
+    console.error('[ERROR]', ...args);
+  },
+  warn: (...args) => {
+    console.warn('[WARN]', ...args);
+  },
+};
+
+module.exports = { logger };
