@@ -5,10 +5,12 @@
 
 const stripe = require('stripe');
 const axios = require('axios');
+const sessionService = require('./sessionservice');
 
 const config = require('./config');
 const { logger } = require('./logger');
 const { sendCertificateImage } = require('./messageservice');
+ 
 
 // Initialize Stripe
 const stripeClient = stripe(config.stripeSecretKey);
@@ -71,27 +73,22 @@ async function handleStripeWebhook(req, res) {
   let event;
 
   try {
-    event = stripeClient.webhooks.constructEvent(
-      req.body,
-      sig,
-      config.stripeWebhookSecret
-    );
+    event = stripe.webhooks.constructEvent(req.body, sig, config.stripeWebhookSecret);
   } catch (err) {
     logger.error('Signature verification error:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // If the event type is checkout.session.completed, handle it
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const { senderNumber, recipientNumber, certificateId, recipientName } = session.metadata;
 
-    logger.info(`Payment completed for sender: ${senderNumber}, recipient: ${recipientNumber}, certificate: ${certificateId}`);
+    logger.info(`Payment completed! Sender: ${senderNumber}, Recipient: ${recipientNumber}`);
 
-    // Send certificate to the recipient
+    // 1) Send the certificate to recipient
     await sendCertificateImage(recipientNumber, certificateId, recipientName);
 
-    // Send confirmation to the sender
+    // 2) Notify the sender
     try {
       await axios.post(
         config.whatsappApiUrl,
@@ -99,9 +96,7 @@ async function handleStripeWebhook(req, res) {
           messaging_product: 'whatsapp',
           to: senderNumber,
           type: 'text',
-          text: {
-            body: `شكراً للدفع! الشهادة تم إرسالها بنجاح إلى ${recipientName}.`,
-          },
+          text: { body: `شكراً للدفع! الشهادة تم إرسالها بنجاح إلى ${recipientName}.` },
         },
         {
           headers: {
@@ -109,16 +104,21 @@ async function handleStripeWebhook(req, res) {
           },
         }
       );
-      logger.info(`Payment confirmation sent to sender ${senderNumber}`);
+      logger.info(`Payment confirmation sent to ${senderNumber}`);
     } catch (error) {
-      logger.error(
-        `Failed to send payment confirmation to ${senderNumber}:`,
-        error.response?.data || error.message
-      );
+      logger.error(`Failed to send confirmation to ${senderNumber}:`, error.response?.data || error.message);
+    }
+
+    // 3) Update the user's session to avoid "ننتظر تأكيد الدفع..." again
+    // << NEW LINES >>
+    const senderSession = sessionService.getSession(senderNumber);
+    if (senderSession) {
+      senderSession.step = 'ask_another';  // or 'welcome'
+      senderSession.paymentPending = false;
+      sessionService.setSession(senderNumber, senderSession);
     }
   }
 
-  // Acknowledge the webhook
   res.sendStatus(200);
 }
 
