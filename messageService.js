@@ -89,11 +89,17 @@ const FREE_CERTIFICATES = [1, 5];
 
 // Process user message based on their conversation step
 async function handleUserMessage(from, message) {
-  const choice = message.interactive?.button_reply?.id || message.text?.body || '';
+  // Ensure 'choice' is always a string
+  const choice = (
+    message.interactive?.button_reply?.id ||  // Button reply ID if present
+    message.text?.body ||                    // Text body if present
+    ''
+  ).trim();
+
   let session = sessionService.getSession(from);
 
   // Check if session is new or user typed a greeting
-  if (!session || /^(hello|hi|مرحبا|ابدأ)$/i.test(choice.trim())) {
+  if (!session || /^(hello|hi|مرحبا|ابدأ)$/i.test(choice)) {
     session = { step: 'welcome', certificatesSent: 0 };
     sessionService.setSession(from, session);
   }
@@ -107,7 +113,7 @@ async function handleUserMessage(from, message) {
 
     case 'select_certificate':
       {
-        const certNumber = parseInt(choice.trim(), 10);
+        const certNumber = parseInt(choice, 10);
         if (certNumber >= 1 && certNumber <= 10) {
           session.selectedCertificate = certNumber;
           session.step = 'ask_recipient_name';
@@ -121,8 +127,8 @@ async function handleUserMessage(from, message) {
 
     case 'ask_recipient_name':
       {
-        if (choice.trim()) {
-          session.recipientName = choice.trim();
+        if (choice) {
+          session.recipientName = choice;
           session.step = 'ask_recipient_number';
           sessionService.setSession(from, session);
           await sendWhatsAppText(
@@ -138,14 +144,11 @@ async function handleUserMessage(from, message) {
     case 'ask_recipient_number':
       {
         // Basic check for digits only
-        if (/^\d+$/.test(choice.trim())) {
-          session.recipientNumber = choice.trim();
+        if (/^\d+$/.test(choice)) {
+          session.recipientNumber = choice;
           session.step = 'confirm_send';
           sessionService.setSession(from, session);
-          await sendWhatsAppText(
-            from,
-            `سيتم إرسال الشهادة إلى ${session.recipientName}. هل تريد إرسالها الآن؟ (نعم/لا)`
-          );
+          await sendWhatsAppText(from, `سيتم إرسال الشهادة إلى ${session.recipientName}. هل تريد إرسالها الآن؟ (نعم/لا)`);
         } else {
           await sendWhatsAppText(from, 'يرجى إدخال رقم صحيح يشمل رمز الدولة.');
         }
@@ -153,10 +156,21 @@ async function handleUserMessage(from, message) {
       break;
 
     case 'confirm_send':
-  if (/^نعم$/i.test(choice.trim())) {
-    if (FREE_CERTIFICATES.includes(session.selectedCertificate)) {
-      // ...send free certificate logic...
-    } else {
+      {
+        if (/^نعم$/i.test(choice)) {
+          // If it's a free certificate, send immediately
+          if (FREE_CERTIFICATES.includes(session.selectedCertificate)) {
+            await sendCertificateImage(
+              session.recipientNumber,
+              session.selectedCertificate,
+              session.recipientName
+            );
+            session.certificatesSent += 1;
+            await sendWhatsAppText(from, 'تم إرسال الشهادة بنجاح.');
+            session.step = 'ask_another';
+            sessionService.setSession(from, session);
+            await sendWhatsAppText(from, 'هل ترغب في إرسال شهادة أخرى؟ (نعم/لا)');
+          } else {
             // Create Stripe Checkout Session
             const stripeSessionUrl = await createStripeCheckoutSession(
               session.selectedCertificate,  // 1) certificateId
@@ -164,24 +178,24 @@ async function handleUserMessage(from, message) {
               session.recipientNumber,     // 3) recipientNumber
               session.recipientName        // 4) recipientName
             );
+
             if (stripeSessionUrl) {
               session.paymentPending = true;
-        // Respond with the payment link
-              await sendWhatsAppText(from, `لإتمام الدفع، الرجاء زيارة الرابط التالي: ${stripeSessionUrl}`);
-        // Move user to await_payment
               session.step = 'await_payment';
               sessionService.setSession(from, session);
+              await sendWhatsAppText(from, `لإتمام الدفع، الرجاء زيارة الرابط التالي: ${stripeSessionUrl}`);
             } else {
               await sendWhatsAppText(from, 'حدث خطأ في إنشاء جلسة الدفع. حاول مرة أخرى.');
-                      }
-          } 
-       } else if (/^لا$/i.test(choice.trim())) {
-    await sendWhatsAppText(from, 'تم إنهاء الجلسة. شكراً.');
-    sessionService.resetSession(from);
-  } else {
-    await sendWhatsAppText(from, 'يرجى الرد بـ (نعم/لا).');
-   }
-  break; 
+            }
+          }
+        } else if (/^لا$/i.test(choice)) {
+          await sendWhatsAppText(from, 'تم إنهاء الجلسة. شكراً.');
+          sessionService.resetSession(from);
+        } else {
+          await sendWhatsAppText(from, 'يرجى الرد بـ (نعم/لا).');
+        }
+      }
+      break;
 
     case 'await_payment':
       {
@@ -192,11 +206,11 @@ async function handleUserMessage(from, message) {
 
     case 'ask_another':
       {
-        if (/^نعم$/i.test(choice.trim())) {
+        if (/^نعم$/i.test(choice)) {
           session.step = 'welcome';
           sessionService.setSession(from, session);
           await sendWelcomeTemplate(from);
-        } else if (/^لا$/i.test(choice.trim())) {
+        } else if (/^لا$/i.test(choice)) {
           await sendWhatsAppText(from, 'تم إنهاء الجلسة. شكراً.');
           sessionService.resetSession(from);
         } else {
@@ -207,10 +221,7 @@ async function handleUserMessage(from, message) {
 
     default:
       {
-        await sendWhatsAppText(
-          from,
-          "حدث خطأ. أرسل 'مرحبا' أو 'ابدأ' لتجربة جديدة."
-        );
+        await sendWhatsAppText(from, "حدث خطأ. أرسل 'مرحبا' أو 'ابدأ' لتجربة جديدة.");
         sessionService.resetSession(from);
       }
       break;
@@ -274,7 +285,7 @@ async function sendWhatsAppText(to, message) {
 
 /** Send a certificate image (overlay recipient name on Cloudinary) */
 async function sendCertificateImage(recipient, certificateId, recipientName) {
-  const cloudinaryUrl = cloudinary.url(CERTIFICATE_PUBLIC_IDS[certificateId], {
+  const certificateImageUrl = cloudinary.url(CERTIFICATE_PUBLIC_IDS[certificateId], {
     transformation: [
       {
         overlay: {
@@ -305,7 +316,7 @@ async function sendCertificateImage(recipient, certificateId, recipientName) {
                 {
                   type: 'image',
                   image: {
-                    link: cloudinaryUrl,
+                    link: certificateImageUrl,
                   },
                 },
               ],
@@ -344,6 +355,5 @@ async function sendCertificateImage(recipient, certificateId, recipientName) {
 module.exports = {
   handleWebhookVerification,
   handleIncomingMessages,
-  // Exported mainly for use in paymentservice's webhook if needed
-  sendCertificateImage,
+  sendCertificateImage, // Exported for use in paymentservice.js
 };

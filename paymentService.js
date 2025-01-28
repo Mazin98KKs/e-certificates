@@ -5,17 +5,16 @@
 
 const stripe = require('stripe');
 const axios = require('axios');
-const sessionService = require('./sessionservice');
 
 const config = require('./config');
 const { logger } = require('./logger');
+const sessionService = require('./sessionservice'); // Ensure correct import
 const { sendCertificateImage } = require('./messageservice');
- 
 
-// Initialize Stripe
+// Initialize Stripe with your secret key
 const stripeClient = stripe(config.stripeSecretKey);
 
-// Map of certificate to Stripe Price IDs
+// Map of certificates to Stripe Price IDs
 const certificateToPriceMap = {
   2: 'price_1Qlw3YBH45p3WHSs6t7GT3cc',
   3: 'price_1QlwCPBH45p3WHSsOJPIV4ck',
@@ -31,7 +30,6 @@ const certificateToPriceMap = {
  * Create Stripe checkout session for paid certificates
  * Returns the URL for the user to complete payment.
  */
-
 async function createStripeCheckoutSession(certificateId, senderNumber, recipientNumber, recipientName) {
   const priceId = certificateToPriceMap[certificateId];
   if (!priceId) {
@@ -47,13 +45,14 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
       ],
       mode: 'payment',
       metadata: {
-        senderNumber,     // must match the second argument
-        recipientNumber,  // third
-        certificateId,    // first
-        recipientName,    // fourth
+        senderNumber,
+        recipientNumber,
+        certificateId,
+        recipientName,
       },
-      success_url: 'https://wa.me/16033040262',
-      cancel_url: 'https://wa.me/16033040262',
+      // On success/cancel, you may want to direct back to your site or a WA link
+      success_url: `https://wa.me/16033040262`,
+      cancel_url: `https://wa.me/16033040262`,
     });
 
     logger.info(`Stripe session created for certificate ${certificateId}, sender ${senderNumber}`);
@@ -73,17 +72,19 @@ async function handleStripeWebhook(req, res) {
   let event;
 
   try {
+    // Verify the event came from Stripe
     event = stripeClient.webhooks.constructEvent(req.body, sig, config.stripeWebhookSecret);
   } catch (err) {
     logger.error('Signature verification error:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  // Handle the checkout.session.completed event
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const { senderNumber, recipientNumber, certificateId, recipientName } = session.metadata || {};
 
-    // If metadata is missing or partial, skip to avoid the Cloudinary error
+    // Check if all required metadata exists
     if (!senderNumber || !recipientNumber || !certificateId || !recipientName) {
       logger.warn('checkout.session.completed event has missing metadata. Skipping certificate sending.');
       return res.sendStatus(200);
@@ -91,11 +92,12 @@ async function handleStripeWebhook(req, res) {
 
     logger.info(`Payment completed! Sender: ${senderNumber}, Recipient: ${recipientNumber}, Certificate ID: ${certificateId}, Name: ${recipientName}`);
 
-    // 1) Send the certificate to the recipient
-    await sendCertificateImage(recipientNumber, certificateId, recipientName);
-
-    // 2) Notify the sender
     try {
+      // 1) Send the certificate to the recipient
+      await sendCertificateImage(recipientNumber, certificateId, recipientName);
+      logger.info(`Certificate sent to ${recipientNumber}`);
+
+      // 2) Notify the sender
       await axios.post(
         config.whatsappApiUrl,
         {
@@ -109,26 +111,25 @@ async function handleStripeWebhook(req, res) {
         {
           headers: {
             Authorization: `Bearer ${config.whatsappApiToken}`,
+            'Content-Type': 'application/json',
           },
         }
       );
       logger.info(`Payment confirmation sent to ${senderNumber}`);
-    } catch (error) {
-      logger.error(`Failed to send confirmation to ${senderNumber}:`, error.response?.data || error.message);
-    }
 
-    // 3) RESET the session immediately after success to end conversation
-    sessionService.resetSession(senderNumber);
-    logger.info(`Session reset for ${senderNumber}`);
+      // 3) Reset the user's session to end the conversation
+      sessionService.resetSession(senderNumber);
+      logger.info(`Session reset for ${senderNumber}`);
+    } catch (error) {
+      logger.error(`Error during webhook processing for sender ${senderNumber}:`, error.response?.data || error.message);
+      // Optionally, handle retries or notify admins
+    }
   }
 
+  // Respond to Stripe to acknowledge receipt of the event
   res.sendStatus(200);
 }
 
-
-*************************************************************
- * Exports
- *************************************************************/
 module.exports = {
   createStripeCheckoutSession,
   handleStripeWebhook,
