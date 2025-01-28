@@ -10,11 +10,9 @@ cloudinary.config(true);
 
 const app = express();
 
-app.use(
-  bodyParser.raw({
-    type: 'application/json',
-  })
-);
+app.use('/webhook', bodyParser.json());
+app.use('/stripe-webhook', bodyParser.raw({ type: 'application/json' }));
+
 
 // In-memory user sessions
 const userSessions = {};
