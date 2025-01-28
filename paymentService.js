@@ -31,6 +31,7 @@ const certificateToPriceMap = {
  * Create Stripe checkout session for paid certificates
  * Returns the URL for the user to complete payment.
  */
+
 async function createStripeCheckoutSession(certificateId, senderNumber, recipientNumber, recipientName) {
   const priceId = certificateToPriceMap[certificateId];
   if (!priceId) {
@@ -46,14 +47,13 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
       ],
       mode: 'payment',
       metadata: {
-        senderNumber,
-        recipientNumber,
-        certificateId,
-        recipientName,
+        senderNumber,     // must match the second argument
+        recipientNumber,  // third
+        certificateId,    // first
+        recipientName,    // fourth
       },
-      // On success/cancel, you may want to direct back to your site or a WA link
-      success_url: `https://wa.me/16033040262`,
-      cancel_url: `https://wa.me/16033040262`,
+      success_url: 'https://wa.me/16033040262',
+      cancel_url: 'https://wa.me/16033040262',
     });
 
     logger.info(`Stripe session created for certificate ${certificateId}, sender ${senderNumber}`);

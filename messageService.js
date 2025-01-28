@@ -1,72 +1,231 @@
+/*************************************************************
+ * messageservice.js
+ * Handles WhatsApp conversation logic, messaging, and 
+ * sending certificates via WhatsApp.
+ *************************************************************/
+
 const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
-const { CERTIFICATE_PUBLIC_IDS } = require('./config');
-const { getSession, setSession } = require('./sessionService');
 
-/**
- * Handle incoming messages from WhatsApp
- * @param {string} from - The sender's WhatsApp number
- * @param {string} text - The message text
- */
-async function handleIncomingMessage(from, text) {
-  let session = getSession(from);
+const config = require('./config');
+const { logger } = require('./logger');
+const sessionService = require('./sessionservice');
+const { createStripeCheckoutSession } = require('./paymentservice');
 
-  if (!session || /^(hello|hi|مرحبا|ابدأ)$/i.test(text.trim())) {
+// Configure Cloudinary with your environment variables
+cloudinary.config({
+  cloud_name: config.cloudinaryCloudName,
+  api_key: config.cloudinaryApiKey,
+  api_secret: config.cloudinaryApiSecret,
+});
+
+/** In-case you want to verify your webhook from Facebook side */
+function handleWebhookVerification(req, res) {
+  const VERIFY_TOKEN = config.verifyToken;
+
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode && token) {
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+      logger.info('WEBHOOK_VERIFIED');
+      return res.status(200).send(challenge);
+    }
+    return res.sendStatus(403);
+  }
+  return res.sendStatus(400);
+}
+
+/** Primary handler for incoming WhatsApp messages */
+async function handleIncomingMessages(req, res) {
+  try {
+    if (req.body.object === 'whatsapp_business_account') {
+      const entry = req.body.entry && req.body.entry[0];
+      if (entry && entry.changes) {
+        for (const change of entry.changes) {
+          const value = change.value;
+          if (!value.messages) continue;
+
+          for (const message of value.messages) {
+            const from = message.from;
+            const text = message.text?.body || '';
+            logger.info(`Incoming message from ${from}: ${text}`);
+
+            // Handle the conversation flow
+            await handleUserMessage(from, message);
+          }
+        }
+      }
+    }
+    // Acknowledge receipt
+    res.sendStatus(200);
+  } catch (error) {
+    logger.error('Error handling incoming message:', error);
+    res.sendStatus(500);
+  }
+}
+
+/*************************************************************
+ * Conversation Flow + WhatsApp Send Logic
+ *************************************************************/
+
+// Certificate Public IDs (Cloudinary)
+const CERTIFICATE_PUBLIC_IDS = {
+  1: 'bestfriend_aamfqh',
+  2: 'malgof_egqihg',
+  3: 'kfoo_ncybxx',
+  4: 'lazy_vndi9i',
+  5: 'Mokaf7_vetjxx',
+  6: 'donothing_nvdhcx',
+  7: 'knoweverything_vppbsa',
+  8: 'friendly_e7szzo',
+  9: 'kingnegative_ak81hp',
+  10: 'lier_hyuisy',
+};
+
+// Certificates 1 & 5 are free
+const FREE_CERTIFICATES = [1, 5];
+
+// Process user message based on their conversation step
+async function handleUserMessage(from, message) {
+  const choice = message.interactive?.button_reply?.id || message.text?.body || '';
+  let session = sessionService.getSession(from);
+
+  // Check if session is new or user typed a greeting
+  if (!session || /^(hello|hi|مرحبا|ابدأ)$/i.test(choice.trim())) {
     session = { step: 'welcome', certificatesSent: 0 };
-    setSession(from, session);
+    sessionService.setSession(from, session);
   }
 
   switch (session.step) {
     case 'welcome':
       await sendWelcomeTemplate(from);
       session.step = 'select_certificate';
+      sessionService.setSession(from, session);
       break;
 
-    // Other case logic here...
+    case 'select_certificate':
+      {
+        const certNumber = parseInt(choice.trim(), 10);
+        if (certNumber >= 1 && certNumber <= 10) {
+          session.selectedCertificate = certNumber;
+          session.step = 'ask_recipient_name';
+          sessionService.setSession(from, session);
+          await sendWhatsAppText(from, 'وش اسم الشخص اللي ودك ترسله الشهاده');
+        } else {
+          await sendWhatsAppText(from, 'يرجى اختيار رقم صحيح من 1 إلى 10.');
+        }
+      }
+      break;
+
+    case 'ask_recipient_name':
+      {
+        if (choice.trim()) {
+          session.recipientName = choice.trim();
+          session.step = 'ask_recipient_number';
+          sessionService.setSession(from, session);
+          await sendWhatsAppText(
+            from,
+            'ادخل رقم واتساب المستلم مع رمز الدولة \nمثال: \n  عمان 96890000000 \n  966500000000 السعودية'
+          );
+        } else {
+          await sendWhatsAppText(from, 'يرجى إدخال اسم صحيح.');
+        }
+      }
+      break;
+
+    case 'ask_recipient_number':
+      {
+        // Basic check for digits only
+        if (/^\d+$/.test(choice.trim())) {
+          session.recipientNumber = choice.trim();
+          session.step = 'confirm_send';
+          sessionService.setSession(from, session);
+          await sendWhatsAppText(
+            from,
+            `سيتم إرسال الشهادة إلى ${session.recipientName}. هل تريد إرسالها الآن؟ (نعم/لا)`
+          );
+        } else {
+          await sendWhatsAppText(from, 'يرجى إدخال رقم صحيح يشمل رمز الدولة.');
+        }
+      }
+      break;
+
+    case 'confirm_send':
+  if (/^نعم$/i.test(choice.trim())) {
+    if (FREE_CERTIFICATES.includes(session.selectedCertificate)) {
+      // ...send free certificate logic...
+    } else {
+            // Create Stripe Checkout Session
+            const stripeSessionUrl = await createStripeCheckoutSession(
+              session.selectedCertificate,  // 1) certificateId
+              from,                        // 2) senderNumber
+              session.recipientNumber,     // 3) recipientNumber
+              session.recipientName        // 4) recipientName
+            );
+            if (stripeSessionUrl) {
+              session.paymentPending = true;
+        // Respond with the payment link
+              await sendWhatsAppText(from, `لإتمام الدفع، الرجاء زيارة الرابط التالي: ${stripeSessionUrl}`);
+        // Move user to await_payment
+              session.step = 'await_payment';
+              sessionService.setSession(from, session);
+            } else {
+              await sendWhatsAppText(from, 'حدث خطأ في إنشاء جلسة الدفع. حاول مرة أخرى.');
+                      }
+          } 
+       } else if (/^لا$/i.test(choice.trim())) {
+    await sendWhatsAppText(from, 'تم إنهاء الجلسة. شكراً.');
+    sessionService.resetSession(from);
+  } else {
+    await sendWhatsAppText(from, 'يرجى الرد بـ (نعم/لا).');
+   }
+  break; 
+
+    case 'await_payment':
+      {
+        // Just remind user we are waiting
+        await sendWhatsAppText(from, 'ننتظر تأكيد الدفع...');
+      }
+      break;
+
+    case 'ask_another':
+      {
+        if (/^نعم$/i.test(choice.trim())) {
+          session.step = 'welcome';
+          sessionService.setSession(from, session);
+          await sendWelcomeTemplate(from);
+        } else if (/^لا$/i.test(choice.trim())) {
+          await sendWhatsAppText(from, 'تم إنهاء الجلسة. شكراً.');
+          sessionService.resetSession(from);
+        } else {
+          await sendWhatsAppText(from, 'يرجى الرد بـ (نعم/لا).');
+        }
+      }
+      break;
 
     default:
-      await sendTextMessage(from, "حدث خطأ. أرسل 'مرحبا' أو 'ابدأ' لتجربة جديدة.");
-      setSession(from, { step: 'welcome', certificatesSent: 0 });
+      {
+        await sendWhatsAppText(
+          from,
+          "حدث خطأ. أرسل 'مرحبا' أو 'ابدأ' لتجربة جديدة."
+        );
+        sessionService.resetSession(from);
+      }
       break;
   }
 }
 
-/**
- * Send a WhatsApp text message
- * @param {string} to - The recipient's WhatsApp number
- * @param {string} message - The text message to send
- */
-async function sendTextMessage(to, message) {
-  try {
-    await axios.post(
-      process.env.WHATSAPP_API_URL,
-      {
-        messaging_product: 'whatsapp',
-        to,
-        type: 'text',
-        text: { body: message },
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-    console.log(`Sent text to ${to}: ${message}`);
-  } catch (error) {
-    console.error('Error sending WhatsApp text:', error.response?.data || error.message);
-  }
-}
+/*************************************************************
+ * Sending WhatsApp Templates & Text
+ *************************************************************/
 
-/**
- * Send a welcome template
- * @param {string} to - The recipient's WhatsApp number
- */
+/** Send a pre-defined "welcome" template */
 async function sendWelcomeTemplate(to) {
   try {
     await axios.post(
-      process.env.WHATSAPP_API_URL,
+      config.whatsappApiUrl,
       {
         messaging_product: 'whatsapp',
         to,
@@ -78,15 +237,113 @@ async function sendWelcomeTemplate(to) {
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
+          Authorization: `Bearer ${config.whatsappApiToken}`,
           'Content-Type': 'application/json',
         },
       }
     );
-    console.log(`Template 'welcome' sent to ${to}`);
+    logger.info(`Template 'welcome' sent to ${to}`);
   } catch (error) {
-    console.error('Error sending WhatsApp template:', error.response?.data || error.message);
+    logger.error('Error sending WhatsApp template:', error.response?.data || error.message);
   }
 }
 
-module.exports = { handleIncomingMessage, sendTextMessage, sendWelcomeTemplate };
+/** Send a text message via WhatsApp */
+async function sendWhatsAppText(to, message) {
+  try {
+    await axios.post(
+      config.whatsappApiUrl,
+      {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'text',
+        text: { body: message },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${config.whatsappApiToken}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+    logger.info(`Sent text to ${to}: ${message}`);
+  } catch (error) {
+    logger.error('Error sending WhatsApp text:', error.response?.data || error.message);
+  }
+}
+
+/** Send a certificate image (overlay recipient name on Cloudinary) */
+async function sendCertificateImage(recipient, certificateId, recipientName) {
+  const cloudinaryUrl = cloudinary.url(CERTIFICATE_PUBLIC_IDS[certificateId], {
+    transformation: [
+      {
+        overlay: {
+          font_family: 'Arial',
+          font_size: 80,
+          text: recipientName,
+        },
+        gravity: 'center',
+        y: -10,
+      },
+    ],
+  });
+
+  try {
+    await axios.post(
+      config.whatsappApiUrl,
+      {
+        messaging_product: 'whatsapp',
+        to: recipient,
+        type: 'template',
+        template: {
+          name: 'gift',
+          language: { code: 'ar' },
+          components: [
+            {
+              type: 'header',
+              parameters: [
+                {
+                  type: 'image',
+                  image: {
+                    link: cloudinaryUrl,
+                  },
+                },
+              ],
+            },
+            {
+              type: 'body',
+              parameters: [
+                {
+                  type: 'text',
+                  text: recipientName,
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${config.whatsappApiToken}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+    logger.info(`Certificate (ID: ${certificateId}) sent to ${recipient}`);
+  } catch (error) {
+    logger.error(
+      `Error sending certificate image to ${recipient}:`,
+      error.response?.data || error.message
+    );
+  }
+}
+
+/*************************************************************
+ * Exports
+ *************************************************************/
+module.exports = {
+  handleWebhookVerification,
+  handleIncomingMessages,
+  // Exported mainly for use in paymentservice's webhook if needed
+  sendCertificateImage,
+};
