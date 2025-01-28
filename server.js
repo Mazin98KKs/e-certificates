@@ -336,19 +336,25 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
  * Stripe Webhook Endpoint
  * Listens for checkout.session.completed events and triggers the certificate sending
  */
-// Apply bodyParser.raw({ type: 'application/json' }) specifically for the Stripe webhook route
 app.post('/stripe-webhook', bodyParser.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
 
+  console.log("Received signature:", sig);
+  console.log("Using webhook secret:", process.env.STRIPE_WEBHOOK_SECRET);
+
   let event;
+
   try {
-    // Use the raw body buffer to verify the webhook signature
+    // Pass the raw body, the signature header, and the endpoint secret to constructEvent
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
-    console.error('Webhook signature verification failed:', err.message);
+    // Log detailed debugging information
+    console.error("Signature verification error:", err.message);
+    console.error("Raw request body:", req.body.toString('utf8'));
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  // Check the event type and handle it accordingly
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const { senderNumber, recipientNumber, certificateId, recipientName } = session.metadata;
