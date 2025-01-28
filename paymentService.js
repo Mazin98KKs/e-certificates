@@ -64,8 +64,8 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
         certificateId: String(certificateId), // Ensure it's a string
         recipientName,
       },
-      success_url: `https://wa.me/16033040262`,
-      cancel_url: `https://wa.me/16033040262`,
+      success_url: `https://certificatesco.com/payment-success`,
+      cancel_url: `https://certificatesco.com/payment-cancel`,
     });
 
     logger.info(`Stripe session created for certificate ${certificateId}, sender ${senderNumber}`);
