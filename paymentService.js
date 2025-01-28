@@ -5,6 +5,7 @@
 
 const stripe = require('stripe');
 const axios = require('axios');
+const crypto = require('crypto');
 
 const config = require('./config');
 const { logger } = require('./logger');
@@ -26,6 +27,19 @@ const certificateToPriceMap = {
   10: 'price_1QlwAiBH45p3WHSsmU4G4EXn',
 };
 
+// In-memory store to track processed webhook events (for idempotency)
+const processedEvents = new Set();
+
+/**
+ * Normalize phone numbers to ensure consistency.
+ * Remove any leading '+' signs.
+ * @param {string} phone 
+ * @returns {string}
+ */
+function normalizePhone(phone) {
+  return phone.replace(/^\+/, '');
+}
+
 /**
  * Create Stripe checkout session for paid certificates
  * Returns the URL for the user to complete payment.
@@ -45,12 +59,11 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
       ],
       mode: 'payment',
       metadata: {
-        senderNumber,
-        recipientNumber,
-        certificateId,
+        senderNumber: normalizePhone(senderNumber),
+        recipientNumber: normalizePhone(recipientNumber),
+        certificateId: String(certificateId), // Ensure it's a string
         recipientName,
       },
-      // On success/cancel, you may want to direct back to your site or a WA link
       success_url: `https://wa.me/16033040262`,
       cancel_url: `https://wa.me/16033040262`,
     });
@@ -77,6 +90,12 @@ async function handleStripeWebhook(req, res) {
   } catch (err) {
     logger.error('Signature verification error:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  // Idempotency check: prevent processing the same event multiple times
+  if (processedEvents.has(event.id)) {
+    logger.warn(`Duplicate event received: ${event.id}. Skipping processing.`);
+    return res.sendStatus(200);
   }
 
   // Handle the checkout.session.completed event
@@ -118,12 +137,18 @@ async function handleStripeWebhook(req, res) {
       logger.info(`Payment confirmation sent to ${senderNumber}`);
 
       // 3) Reset the user's session to end the conversation
-      sessionService.resetSession(senderNumber);
+      await sessionService.resetSession(senderNumber);
       logger.info(`Session reset for ${senderNumber}`);
+
+      // 4) Mark the event as processed
+      processedEvents.add(event.id);
+      logger.info(`Event ${event.id} marked as processed.`);
     } catch (error) {
       logger.error(`Error during webhook processing for sender ${senderNumber}:`, error.response?.data || error.message);
       // Optionally, handle retries or notify admins
     }
+  } else {
+    logger.warn(`Unhandled event type ${event.type}`);
   }
 
   // Respond to Stripe to acknowledge receipt of the event

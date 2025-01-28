@@ -7,17 +7,17 @@
 const sessions = {}; // { [userId]: { step, ... } }
 
 /** Get session by user ID */
-function getSession(userId) {
+async function getSession(userId) {
   return sessions[userId];
 }
 
 /** Set (or update) session for user ID */
-function setSession(userId, sessionData) {
+async function setSession(userId, sessionData) {
   sessions[userId] = sessionData;
 }
 
 /** Reset session (delete from memory) */
-function resetSession(userId) {
+async function resetSession(userId) {
   delete sessions[userId];
 }
 

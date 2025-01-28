@@ -87,8 +87,21 @@ const CERTIFICATE_PUBLIC_IDS = {
 // Certificates 1 & 5 are free
 const FREE_CERTIFICATES = [1, 5];
 
+/**
+ * Normalize phone numbers to ensure consistency.
+ * Remove any leading '+' signs.
+ * @param {string} phone 
+ * @returns {string}
+ */
+function normalizePhone(phone) {
+  return phone.replace(/^\+/, '');
+}
+
 // Process user message based on their conversation step
 async function handleUserMessage(from, message) {
+  // Normalize the phone number to ensure consistency
+  const normalizedFrom = normalizePhone(from);
+
   // Ensure 'choice' is always a string
   const choice = (
     message.interactive?.button_reply?.id ||  // Button reply ID if present
@@ -96,19 +109,19 @@ async function handleUserMessage(from, message) {
     ''
   ).trim();
 
-  let session = sessionService.getSession(from);
+  let session = await sessionService.getSession(normalizedFrom);
 
   // Check if session is new or user typed a greeting
   if (!session || /^(hello|hi|مرحبا|ابدأ)$/i.test(choice)) {
     session = { step: 'welcome', certificatesSent: 0 };
-    sessionService.setSession(from, session);
+    await sessionService.setSession(normalizedFrom, session);
   }
 
   switch (session.step) {
     case 'welcome':
-      await sendWelcomeTemplate(from);
+      await sendWelcomeTemplate(normalizedFrom);
       session.step = 'select_certificate';
-      sessionService.setSession(from, session);
+      await sessionService.setSession(normalizedFrom, session);
       break;
 
     case 'select_certificate':
@@ -117,10 +130,10 @@ async function handleUserMessage(from, message) {
         if (certNumber >= 1 && certNumber <= 10) {
           session.selectedCertificate = certNumber;
           session.step = 'ask_recipient_name';
-          sessionService.setSession(from, session);
-          await sendWhatsAppText(from, 'وش اسم الشخص اللي ودك ترسله الشهاده');
+          await sessionService.setSession(normalizedFrom, session);
+          await sendWhatsAppText(normalizedFrom, 'وش اسم الشخص اللي ودك ترسله الشهاده');
         } else {
-          await sendWhatsAppText(from, 'يرجى اختيار رقم صحيح من 1 إلى 10.');
+          await sendWhatsAppText(normalizedFrom, 'يرجى اختيار رقم صحيح من 1 إلى 10.');
         }
       }
       break;
@@ -130,13 +143,13 @@ async function handleUserMessage(from, message) {
         if (choice) {
           session.recipientName = choice;
           session.step = 'ask_recipient_number';
-          sessionService.setSession(from, session);
+          await sessionService.setSession(normalizedFrom, session);
           await sendWhatsAppText(
-            from,
+            normalizedFrom,
             'ادخل رقم واتساب المستلم مع رمز الدولة \nمثال: \n  عمان 96890000000 \n  966500000000 السعودية'
           );
         } else {
-          await sendWhatsAppText(from, 'يرجى إدخال اسم صحيح.');
+          await sendWhatsAppText(normalizedFrom, 'يرجى إدخال اسم صحيح.');
         }
       }
       break;
@@ -147,10 +160,10 @@ async function handleUserMessage(from, message) {
         if (/^\d+$/.test(choice)) {
           session.recipientNumber = choice;
           session.step = 'confirm_send';
-          sessionService.setSession(from, session);
-          await sendWhatsAppText(from, `سيتم إرسال الشهادة إلى ${session.recipientName}. هل تريد إرسالها الآن؟ (نعم/لا)`);
+          await sessionService.setSession(normalizedFrom, session);
+          await sendWhatsAppText(normalizedFrom, `سيتم إرسال الشهادة إلى ${session.recipientName}. هل تريد إرسالها الآن؟ (نعم/لا)`);
         } else {
-          await sendWhatsAppText(from, 'يرجى إدخال رقم صحيح يشمل رمز الدولة.');
+          await sendWhatsAppText(normalizedFrom, 'يرجى إدخال رقم صحيح يشمل رمز الدولة.');
         }
       }
       break;
@@ -166,15 +179,15 @@ async function handleUserMessage(from, message) {
               session.recipientName
             );
             session.certificatesSent += 1;
-            await sendWhatsAppText(from, 'تم إرسال الشهادة بنجاح.');
+            await sendWhatsAppText(normalizedFrom, 'تم إرسال الشهادة بنجاح.');
             session.step = 'ask_another';
-            sessionService.setSession(from, session);
-            await sendWhatsAppText(from, 'هل ترغب في إرسال شهادة أخرى؟ (نعم/لا)');
+            await sessionService.setSession(normalizedFrom, session);
+            await sendWhatsAppText(normalizedFrom, 'هل ترغب في إرسال شهادة أخرى؟ (نعم/لا)');
           } else {
             // Create Stripe Checkout Session
             const stripeSessionUrl = await createStripeCheckoutSession(
               session.selectedCertificate,  // 1) certificateId
-              from,                        // 2) senderNumber
+              normalizedFrom,              // 2) senderNumber
               session.recipientNumber,     // 3) recipientNumber
               session.recipientName        // 4) recipientName
             );
@@ -182,25 +195,25 @@ async function handleUserMessage(from, message) {
             if (stripeSessionUrl) {
               session.paymentPending = true;
               session.step = 'await_payment';
-              sessionService.setSession(from, session);
-              await sendWhatsAppText(from, `لإتمام الدفع، الرجاء زيارة الرابط التالي: ${stripeSessionUrl}`);
+              await sessionService.setSession(normalizedFrom, session);
+              await sendWhatsAppText(normalizedFrom, `لإتمام الدفع، الرجاء زيارة الرابط التالي: ${stripeSessionUrl}`);
             } else {
-              await sendWhatsAppText(from, 'حدث خطأ في إنشاء جلسة الدفع. حاول مرة أخرى.');
+              await sendWhatsAppText(normalizedFrom, 'حدث خطأ في إنشاء جلسة الدفع. حاول مرة أخرى.');
             }
           }
         } else if (/^لا$/i.test(choice)) {
-          await sendWhatsAppText(from, 'تم إنهاء الجلسة. شكراً.');
-          sessionService.resetSession(from);
+          await sendWhatsAppText(normalizedFrom, 'تم إنهاء الجلسة. شكراً.');
+          await sessionService.resetSession(normalizedFrom);
         } else {
-          await sendWhatsAppText(from, 'يرجى الرد بـ (نعم/لا).');
+          await sendWhatsAppText(normalizedFrom, 'يرجى الرد بـ (نعم/لا).');
         }
       }
       break;
 
     case 'await_payment':
       {
-        // Just remind user we are waiting
-        await sendWhatsAppText(from, 'ننتظر تأكيد الدفع...');
+        // Remind user that payment is being processed
+        await sendWhatsAppText(normalizedFrom, 'ننتظر تأكيد الدفع...');
       }
       break;
 
@@ -208,21 +221,21 @@ async function handleUserMessage(from, message) {
       {
         if (/^نعم$/i.test(choice)) {
           session.step = 'welcome';
-          sessionService.setSession(from, session);
-          await sendWelcomeTemplate(from);
+          await sessionService.setSession(normalizedFrom, session);
+          await sendWelcomeTemplate(normalizedFrom);
         } else if (/^لا$/i.test(choice)) {
-          await sendWhatsAppText(from, 'تم إنهاء الجلسة. شكراً.');
-          sessionService.resetSession(from);
+          await sendWhatsAppText(normalizedFrom, 'تم إنهاء الجلسة. شكراً.');
+          await sessionService.resetSession(normalizedFrom);
         } else {
-          await sendWhatsAppText(from, 'يرجى الرد بـ (نعم/لا).');
+          await sendWhatsAppText(normalizedFrom, 'يرجى الرد بـ (نعم/لا).');
         }
       }
       break;
 
     default:
       {
-        await sendWhatsAppText(from, "حدث خطأ. أرسل 'مرحبا' أو 'ابدأ' لتجربة جديدة.");
-        sessionService.resetSession(from);
+        await sendWhatsAppText(normalizedFrom, "حدث خطأ. أرسل 'مرحبا' أو 'ابدأ' لتجربة جديدة.");
+        await sessionService.resetSession(normalizedFrom);
       }
       break;
   }
@@ -285,7 +298,14 @@ async function sendWhatsAppText(to, message) {
 
 /** Send a certificate image (overlay recipient name on Cloudinary) */
 async function sendCertificateImage(recipient, certificateId, recipientName) {
-  const certificateImageUrl = cloudinary.url(CERTIFICATE_PUBLIC_IDS[certificateId], {
+  const certificatePublicId = CERTIFICATE_PUBLIC_IDS[certificateId];
+  
+  if (!certificatePublicId) {
+    logger.error(`No Cloudinary public ID found for certificate ID ${certificateId}.`);
+    return;
+  }
+
+  const certificateImageUrl = cloudinary.url(certificatePublicId, {
     transformation: [
       {
         overlay: {
