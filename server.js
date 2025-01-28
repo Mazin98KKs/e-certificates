@@ -4,6 +4,8 @@ const bodyParser = require('body-parser');
 const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const choice = message.interactive?.button_reply?.id || message.text?.body;
+
 
 // Cloudinary configuration
 cloudinary.config(true);
@@ -113,11 +115,9 @@ async function handleUserMessage(from, text) {
 
     case 'select_certificate':
       const choice = parseInt(text.trim(), 10);
-      if (choice >= 1 && choice <= 10) {
-        session.selectedCertificate = choice;
+      if (choice && parseInt(choice, 10) >= 1 && parseInt(choice, 10) <= 10) {
+        session.selectedCertificate = parseInt(choice, 10);
         session.step = 'ask_recipient_name';
-
-        // Ask for recipient's name first
         await sendWhatsAppText(from, "وش اسم الشخص اللي ودك ترسله الشهاده");
       } else {
         await sendWhatsAppText(from, "يرجى اختيار رقم صحيح من 1 إلى 10.");
