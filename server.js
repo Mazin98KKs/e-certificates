@@ -319,6 +319,12 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
         { price: priceId, quantity: 1 },
       ],
       mode: 'payment',
+      metadata: {
+        senderNumber,
+        recipientNumber,
+        certificateId,
+        recipientName,
+      },
       success_url: `https://wa.me/16033040262`,
       cancel_url: `https://wa.me/16033040262`,
     });
