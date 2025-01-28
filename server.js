@@ -336,29 +336,27 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
  * Stripe Webhook Endpoint
  * Listens for checkout.session.completed events and triggers the certificate sending
  */
-app.post('/stripe-webhook', async (req, res) => {
+// Configure body parser for other routes
+app.use(bodyParser.json());
+
+// Apply bodyParser.raw({ type: 'application/json' }) specifically for the Stripe webhook route
+app.post('/stripe-webhook', bodyParser.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
 
   let event;
   try {
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
+    // Use the raw body buffer to verify the webhook signature
+    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
     console.error('Webhook signature verification failed:', err.message);
-    return res.sendStatus(400);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-
     const { senderNumber, recipientNumber, certificateId, recipientName } = session.metadata;
 
-    console.log(
-      `Payment completed! Sender: ${senderNumber}, Recipient: ${recipientNumber}, Certificate ID: ${certificateId}, Name: ${recipientName}`
-    );
+    console.log(`Payment completed! Sender: ${senderNumber}, Recipient: ${recipientNumber}, Certificate ID: ${certificateId}, Name: ${recipientName}`);
 
     // Send the certificate image
     const certificateImageUrl = cloudinary.url(
