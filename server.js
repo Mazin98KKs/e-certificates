@@ -5,12 +5,19 @@ const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
-// Cloudinary configuration
-cloudinary.config(true);
-
 const app = express();
 
+// Cloudinary configuration
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+// Middleware for parsing JSON bodies for WhatsApp messages
 app.use('/webhook', bodyParser.json());
+
+// Middleware for parsing raw body for Stripe webhooks
 app.use('/stripe-webhook', bodyParser.raw({ type: 'application/json' }));
 
 // In-memory user sessions
@@ -55,41 +62,51 @@ app.get('/webhook', (req, res) => {
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
+  // Log the verification request for debugging
+  console.log(`Webhook verification request: mode=${mode}, token=${token}, challenge=${challenge}`);
+
   if (mode && token) {
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
       console.log('WEBHOOK_VERIFIED');
       return res.status(200).send(challenge);
     }
+    console.log('WEBHOOK_VERIFICATION_FAILED: Invalid token or mode');
     return res.sendStatus(403);
   }
-  return res.sendStatus(400);
+  console.log('WEBHOOK_VERIFICATION_FAILED: Missing mode or token');
+  res.sendStatus(400);
 });
 
 /**
  * Webhook for Incoming WhatsApp Messages
  */
 app.post('/webhook', async (req, res) => {
-  if (req.body.object === 'whatsapp_business_account') {
-    const entry = req.body.entry && req.body.entry[0];
-    if (entry && entry.changes) {
-      const changes = entry.changes;
-      for (const change of changes) {
-        const value = change.value;
-        if (!value.messages) continue;
+  try {
+    if (req.body.object === 'whatsapp_business_account') {
+      const entry = req.body.entry && req.body.entry[0];
+      if (entry && entry.changes) {
+        const changes = entry.changes;
+        for (const change of changes) {
+          const value = change.value;
+          if (!value.messages) continue;
 
-        const messages = value.messages;
-        for (const message of messages) {
-          const from = message.from;
-          const text = message.text?.body || '';
-          console.log(`Incoming message from ${from}: ${text}`);
-          await handleUserMessage(from, message);
+          const messages = value.messages;
+          for (const message of messages) {
+            const from = message.from;
+            const text = message.text?.body || '';
+            console.log(`Incoming message from ${from}: ${text}`);
+            await handleUserMessage(from, message);
+          }
         }
       }
     }
-  }
 
-  // Acknowledge receipt of the webhook
-  return res.sendStatus(200);
+    // Acknowledge receipt of the webhook
+    res.sendStatus(200);
+  } catch (error) {
+    console.error('Error processing incoming WhatsApp message:', error.message);
+    res.sendStatus(500);
+  }
 });
 
 /**
@@ -97,6 +114,11 @@ app.post('/webhook', async (req, res) => {
  */
 async function handleUserMessage(from, message) {
   const choice = message.interactive?.button_reply?.id || message.text?.body;
+
+  if (!choice) {
+    await sendWhatsAppText(from, "لم أفهم رسالتك. يرجى المحاولة مرة أخرى.");
+    return;
+  }
 
   let session = userSessions[from];
 
@@ -113,58 +135,69 @@ async function handleUserMessage(from, message) {
       break;
 
     case 'select_certificate':
-      const certificateChoice = parseInt(choice.trim(), 10);
-      if (certificateChoice && certificateChoice >= 1 && certificateChoice <= 10) {
-        session.selectedCertificate = certificateChoice;
-        session.step = 'ask_recipient_name';
-        await sendWhatsAppText(from, "وش اسم الشخص اللي ودك ترسله الشهاده");
-      } else {
-        await sendWhatsAppText(from, "يرجى اختيار رقم صحيح من 1 إلى 10.");
+      {
+        const certificateChoice = parseInt(choice.trim(), 10);
+        if (certificateChoice && certificateChoice >= 1 && certificateChoice <= 10) {
+          session.selectedCertificate = certificateChoice;
+          session.step = 'ask_recipient_name';
+          await sendWhatsAppText(from, "وش اسم الشخص اللي ودك ترسله الشهاده");
+        } else {
+          await sendWhatsAppText(from, "يرجى اختيار رقم صحيح من 1 إلى 10.");
+        }
       }
       break;
 
     case 'ask_recipient_name':
-      if (choice.trim()) {
-        session.recipientName = choice.trim();
-        session.step = 'ask_recipient_number';
-        await sendWhatsAppText(from, "ادخل رقم واتساب المستلم مع رمز الدولة \n" +
-          "مثال: \n  عمان 96890000000 \n  966500000000 السعودية");
-      } else {
-        await sendWhatsAppText(from, "يرجى إدخال اسم صحيح.");
+      {
+        if (choice.trim()) {
+          session.recipientName = choice.trim();
+          session.step = 'ask_recipient_number';
+          await sendWhatsAppText(from, "ادخل رقم واتساب المستلم مع رمز الدولة \n" +
+            "مثال: \n  عمان 96890000000 \n  966500000000 السعودية");
+        } else {
+          await sendWhatsAppText(from, "يرجى إدخال اسم صحيح.");
+        }
       }
       break;
 
     case 'ask_recipient_number':
-      if (/^\d+$/.test(choice.trim())) {
-        session.recipientNumber = choice.trim();
-        session.step = 'confirm_send';
-        await sendWhatsAppText(from, `سيتم إرسال الشهادة إلى ${session.recipientName}. هل تريد إرسالها الآن؟ (نعم/لا)`);
-      } else {
-        await sendWhatsAppText(from, "يرجى إدخال رقم صحيح يشمل رمز الدولة.");
+      {
+        const recipientNumber = choice.trim();
+        if (/^\d{10,15}$/.test(recipientNumber)) {
+          session.recipientNumber = recipientNumber;
+          session.step = 'confirm_send';
+          await sendWhatsAppText(from, `سيتم إرسال الشهادة إلى ${session.recipientName}. هل تريد إرسالها الآن؟ (نعم/لا)`);
+        } else {
+          await sendWhatsAppText(from, "يرجى إدخال رقم صحيح يشمل رمز الدولة.");
+        }
       }
       break;
 
     case 'confirm_send':
-      if (/^نعم$/i.test(choice.trim())) {
-        if (FREE_CERTIFICATES.includes(session.selectedCertificate)) {
-          await sendCertificateImage(session.recipientNumber, session.selectedCertificate, session.recipientName);
-          session.certificatesSent++;
-          await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
-          session.step = 'ask_another';
-          await sendWhatsAppText(from, "هل ترغب في إرسال شهادة أخرى؟ (نعم/لا)");
-        } else {
-          const stripeSessionUrl = await createStripeCheckoutSession(session.selectedCertificate, from, session.recipientNumber, session.recipientName);
-          if (stripeSessionUrl) {
-            session.paymentPending = true;
-            await sendWhatsAppText(from, `لإتمام الدفع، الرجاء زيارة الرابط التالي: ${stripeSessionUrl}`);
-            session.step = 'await_payment';
+      {
+        if (/^نعم$/i.test(choice.trim())) {
+          if (FREE_CERTIFICATES.includes(session.selectedCertificate)) {
+            await sendCertificateImage(session.recipientNumber, session.selectedCertificate, session.recipientName);
+            session.certificatesSent++;
+            await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
+            session.step = 'ask_another';
+            await sendWhatsAppText(from, "هل ترغب في إرسال شهادة أخرى؟ (نعم/لا)");
+          } else {
+            const stripeSessionUrl = await createStripeCheckoutSession(session.selectedCertificate, from, session.recipientNumber, session.recipientName);
+            if (stripeSessionUrl) {
+              session.paymentPending = true;
+              await sendWhatsAppText(from, `لإتمام الدفع، الرجاء زيارة الرابط التالي: ${stripeSessionUrl}`);
+              session.step = 'await_payment';
+            } else {
+              await sendWhatsAppText(from, "حدث خطأ في إنشاء جلسة الدفع. حاول مرة أخرى.");
+            }
           }
+        } else if (/^لا$/i.test(choice.trim())) {
+          await sendWhatsAppText(from, "تم إنهاء الجلسة. شكراً.");
+          delete userSessions[from];
+        } else {
+          await sendWhatsAppText(from, "يرجى الرد بـ (نعم/لا).");
         }
-      } else if (/^لا$/i.test(choice.trim())) {
-        await sendWhatsAppText(from, "تم إنهاء الجلسة. شكراً.");
-        userSessions[from] = null;
-      } else {
-        await sendWhatsAppText(from, "يرجى الرد بـ (نعم/لا).");
       }
       break;
 
@@ -178,7 +211,7 @@ async function handleUserMessage(from, message) {
         await sendWelcomeTemplate(from);
       } else if (/^لا$/i.test(choice.trim())) {
         await sendWhatsAppText(from, "تم إنهاء الجلسة. شكراً.");
-        userSessions[from] = null;
+        delete userSessions[from];
       } else {
         await sendWhatsAppText(from, "يرجى الرد بـ (نعم/لا).");
       }
@@ -189,6 +222,9 @@ async function handleUserMessage(from, message) {
       userSessions[from] = { step: 'welcome', certificatesSent: 0 };
       break;
   }
+
+  // Update the session
+  userSessions[from] = session;
 }
 
 /**
@@ -224,7 +260,13 @@ async function sendWelcomeTemplate(to) {
  * Send the certificate image
  */
 async function sendCertificateImage(recipient, certificateId, recipientName) {
-  const certificateImageUrl = cloudinary.url(CERTIFICATE_PUBLIC_IDS[certificateId], {
+  const certificatePublicId = CERTIFICATE_PUBLIC_IDS[certificateId];
+  if (!certificatePublicId) {
+    console.error(`No Cloudinary public ID found for certificate ID ${certificateId}`);
+    return;
+  }
+
+  const certificateImageUrl = cloudinary.url(certificatePublicId, {
     transformation: [
       {
         overlay: {
@@ -312,6 +354,7 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
       cancel_url: `https://e-certificates.onrender.com/cancel.html`,
     });
 
+    console.log(`Stripe checkout session created: ${session.id}`);
     return session.url;
   } catch (error) {
     console.error('Error creating Stripe checkout session:', error.message);
@@ -323,7 +366,7 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
  * Stripe Webhook Endpoint
  * Listens for checkout.session.completed events and triggers the certificate sending
  */
-app.post('/stripe-webhook', bodyParser.raw({ type: 'application/json' }), async (req, res) => {
+app.post('/stripe-webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
 
   console.log("Received signature:", sig);
@@ -341,13 +384,18 @@ app.post('/stripe-webhook', bodyParser.raw({ type: 'application/json' }), async 
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Check the event type and handle it accordingly
+  // Handle the event
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const { senderNumber, recipientNumber, certificateId, recipientName } = session.metadata;
 
+    // Validate metadata fields
+    if (!senderNumber || !recipientNumber || !certificateId || !recipientName) {
+      console.error("Missing metadata fields in checkout.session.completed event.");
+      return res.sendStatus(400);
+    }
+
     console.log(`Payment completed! Sender: ${senderNumber}, Recipient: ${recipientNumber}, Certificate ID: ${certificateId}, Name: ${recipientName}`);
-    
 
     // Send the certificate image
     const certificateImageUrl = cloudinary.url(
@@ -433,6 +481,7 @@ app.post('/stripe-webhook', bodyParser.raw({ type: 'application/json' }), async 
         {
           headers: {
             Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
+            'Content-Type': 'application/json',
           },
         }
       );
@@ -444,8 +493,17 @@ app.post('/stripe-webhook', bodyParser.raw({ type: 'application/json' }), async 
         error.response?.data || error.message
       );
     }
+
+    // Terminate the session after sending the confirmation
+    if (senderNumber) {
+      console.log(`Terminating session for ${senderNumber}`);
+      delete userSessions[senderNumber];
+    }
+  } else {
+    console.log(`Unhandled event type ${event.type}`);
   }
 
+  // Return a response to acknowledge receipt of the event
   res.sendStatus(200);
 });
 
