@@ -8,11 +8,10 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const app = express();
 
 // Cloudinary configuration
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-});
+cloudinary.config(process.env.CLOUDINARY_URL);
+console.log("Cloudinary Config Loaded:", cloudinary.config());
+
+
 
 // Middleware for parsing JSON bodies for WhatsApp messages
 app.use('/webhook', bodyParser.json());
@@ -239,7 +238,7 @@ async function sendWelcomeTemplate(to) {
         to,
         type: 'template',
         template: {
-          name: 'welcome',
+          name: 'wel_sel',
           language: { code: 'ar' },
         },
       },
@@ -260,11 +259,14 @@ async function sendWelcomeTemplate(to) {
  * Send the certificate image
  */
 async function sendCertificateImage(recipient, certificateId, recipientName) {
-  const certificatePublicId = CERTIFICATE_PUBLIC_IDS[certificateId];
-  if (!certificatePublicId) {
-    console.error(`No Cloudinary public ID found for certificate ID ${certificateId}`);
+  console.log(`Generating certificate image for ID: ${certificateId}, Name: ${recipientName}`);
+
+  if (!certificateId || !CERTIFICATE_PUBLIC_IDS[certificateId]) {
+    console.error(`Invalid certificate ID: ${certificateId}`);
     return;
   }
+
+  const certificatePublicId = CERTIFICATE_PUBLIC_IDS[certificateId];
 
   const certificateImageUrl = cloudinary.url(certificatePublicId, {
     transformation: [
