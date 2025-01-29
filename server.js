@@ -685,6 +685,7 @@ app.get('/payment-cancel', (req, res) => {
 /**
  * Start the server
  */
-app.listen(config.port, () => {
-  logger.info({ event: 'ServerStarted', port: config.port, timestamp: new Date().toISOString() });
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
