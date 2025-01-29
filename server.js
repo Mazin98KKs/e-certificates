@@ -57,8 +57,6 @@ cloudinary.config({
 // Initialize Stripe
 const stripe = stripeLib(config.stripeSecretKey);
 
-// Initialize Express App
-const app = express();
 
 // Middleware to parse JSON bodies for WhatsApp messages
 app.use('/whatsapp-messages', bodyParser.json());
