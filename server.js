@@ -22,6 +22,31 @@ app.use('/stripe-webhook', bodyParser.raw({ type: 'application/json' }));
 // In-memory user sessions
 const userSessions = {};
 
+// Conversation counter
+const initiatedConversations = new Set();
+let initiatedCount = 0;
+
+// Reset initiated count every 24 hours
+setInterval(() => {
+  initiatedConversations.clear();
+  initiatedCount = 0;
+}, 24 * 60 * 60 * 1000);
+
+// Session timeout configuration
+const sessionTimeoutMs = 5 * 60 * 1000; // 5 minutes in milliseconds
+
+// Periodically clean up expired sessions
+setInterval(() => {
+  const now = Date.now();
+  for (const userId in userSessions) {
+    const session = userSessions[userId];
+    if (now - session.lastActivity > sessionTimeoutMs) {
+      console.log(`Session for ${userId} expired and is being removed.`);
+      delete userSessions[userId];
+    }
+  }
+}, 30 * 1000); // Run this check every 30 seconds
+
 // Map of certificates to Cloudinary public IDs
 const CERTIFICATE_PUBLIC_IDS = {
   1: "bestfriend_aamfqh",
@@ -94,6 +119,17 @@ app.post('/webhook', async (req, res) => {
             const from = message.from;
             const text = message.text?.body || '';
             console.log(`Incoming message from ${from}: ${text}`);
+
+            // Add conversation counter check here:
+            if (!initiatedConversations.has(from)) {
+              if (initiatedCount >= 990) {
+                await sendWhatsAppText(from, "Sorry, we're busy now. Please try again later.");
+                continue; // Skip further processing for new conversations
+              }
+              initiatedConversations.add(from);
+              initiatedCount++;
+            }
+
             await handleUserMessage(from, message);
           }
         }
@@ -126,6 +162,8 @@ async function handleUserMessage(from, message) {
     session = { step: 'welcome', certificatesSent: 0 };
     userSessions[from] = session;
   }
+  // Update last activity time
+  session.lastActivity = Date.now();
 
   switch (session.step) {
     case 'welcome':
@@ -151,8 +189,8 @@ async function handleUserMessage(from, message) {
         if (choice.trim()) {
           session.recipientName = choice.trim();
           session.step = 'ask_recipient_number';
-          await sendWhatsAppText(from, "ادخل رقم واتساب المستلم مع رمز الدولة \n" +
-            "مثال: \n  عمان 96890000000 \n  966500000000 السعودية");
+          await sendWhatsAppText(from, "ادخل رقم واتساب المستلم مع رمز الدولة مثال اذا كان من عمان (968) \nادخل: \n96890000000");
+
         } else {
           await sendWhatsAppText(from, "يرجى إدخال اسم صحيح.");
         }
@@ -185,7 +223,7 @@ async function handleUserMessage(from, message) {
             const stripeSessionUrl = await createStripeCheckoutSession(session.selectedCertificate, from, session.recipientNumber, session.recipientName);
             if (stripeSessionUrl) {
               session.paymentPending = true;
-              await sendWhatsAppText(from, `لإتمام الدفع، الرجاء زيارة الرابط التالي: ${stripeSessionUrl}`);
+              await sendWhatsAppText(from, `لإتمام العمليه يمكنك الدفع عن طريق نظام آبل من خلال الرابط الاتي:\n${stripeSessionUrl}`);
               session.step = 'await_payment';
             } else {
               await sendWhatsAppText(from, "حدث خطأ في إنشاء جلسة الدفع. حاول مرة أخرى.");
@@ -534,6 +572,11 @@ async function sendWhatsAppText(to, message) {
     console.error('Error sending WhatsApp text:', error.response?.data || error.message);
   }
 }
+
+// Add this route for monitoring initiated conversations
+app.get('/status', (req, res) => {
+  res.json({ initiatedConversations: initiatedCount });
+});
 
 // Start the server
 const PORT = process.env.PORT || 3000;
