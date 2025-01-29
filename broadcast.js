@@ -1,62 +1,42 @@
-// broadcast.js
 require('dotenv').config();
-
-console.log("Loaded environment variables:", Object.keys(process.env));
-const express = require('express');
 const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
-const xlsx = require('xlsx');
+const cloudinary = require('cloudinary').v2;
 
-async function sendBroadcast() {
-  // Check that required environment variables are set
-  if (!process.env.CLOUDINARY_URL || !process.env.WHATSAPP_API_URL || !process.env.WHATSAPP_API_TOKEN) {
-    console.error("Missing required environment variables.");
-    return;
-  }
+// Configure Cloudinary using your environment variable
+cloudinary.config(process.env.CLOUDINARY_URL);
 
-  // Specify the Cloudinary image public ID to be used in the broadcast
-  const cloudinaryPublicId = "bestfriend_aamfqh";
+if (!process.env.WHATSAPP_API_URL || !process.env.WHATSAPP_API_TOKEN) {
+  console.error("Missing required environment variables for WhatsApp API");
+  process.exit(1);
+}
 
-  // Specify the path to the Excel file with recipient numbers
-  const excelFilePath = path.resolve(__dirname, 'recipients.xlsx');
+// Define the Cloudinary public ID and generate the URL
+const publicId = "bestfriend_aamfqh";
+const imageUrl = cloudinary.url(publicId);
 
-  // Check if the Excel file exists
-  if (!fs.existsSync(excelFilePath)) {
-    console.error("Recipients Excel file not found:", excelFilePath);
-    return;
-  }
+if (!imageUrl) {
+  console.error("Failed to generate Cloudinary image URL");
+  process.exit(1);
+}
 
-  // Load the Excel file and extract recipient numbers
-  const workbook = xlsx.readFile(excelFilePath);
-  const sheetName = workbook.SheetNames[0]; // Use the first sheet
-  const sheet = workbook.Sheets[sheetName];
-  const data = xlsx.utils.sheet_to_json(sheet, { header: 1 });
+// Define the WhatsApp template name
+const templateName = "gift2";
 
-  // The first column (column A) contains the phone numbers
-  const recipientNumbers = data.slice(1).map(row => row[0]).filter(Boolean);
+// The main function to send a broadcast
+async function sendBroadcast(templateName, imageUrl, recipientNumbers) {
+  const url = process.env.WHATSAPP_API_URL;
+  const token = process.env.WHATSAPP_API_TOKEN;
 
-  if (recipientNumbers.length === 0) {
-    console.error("No recipient numbers found in the Excel file.");
-    return;
-  }
-
-  console.log("Found recipient numbers:", recipientNumbers);
-
-  // Construct the URL to the image hosted on Cloudinary
-  const imageUrl = `${process.env.CLOUDINARY_URL}/image/upload/${cloudinaryPublicId}`;
-
-  // Send the broadcast to each recipient
   for (const recipient of recipientNumbers) {
     try {
       const response = await axios.post(
-        process.env.WHATSAPP_API_URL,
+        url,
         {
           messaging_product: 'whatsapp',
           to: recipient,
           type: 'template',
           template: {
-            name: 'gift1',
+            name: templateName,
             language: { code: 'ar' },
             components: [
               {
@@ -64,18 +44,18 @@ async function sendBroadcast() {
                 parameters: [
                   {
                     type: 'image',
-                    image: { link: imageUrl },
-                  },
-                ],
-              },
-            ],
-          },
+                    image: { link: imageUrl }
+                  }
+                ]
+              }
+            ]
+          }
         },
         {
           headers: {
-            Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
-            'Content-Type': 'application/json',
-          },
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
         }
       );
       console.log(`Message sent to ${recipient}:`, response.data);
@@ -85,4 +65,31 @@ async function sendBroadcast() {
   }
 }
 
-sendBroadcast();
+// A simple function to load numbers from a local Excel file (e.g., "recipients.xlsx")
+async function loadRecipientsFromExcel() {
+  const xlsx = require('xlsx');
+  const workbook = xlsx.readFile('recipients.xlsx');
+  const sheetName = workbook.SheetNames[0];
+  const sheet = workbook.Sheets[sheetName];
+  const data = xlsx.utils.sheet_to_json(sheet, { header: 1 });
+
+  // Assuming the numbers are in the first column
+  const recipientNumbers = data.map(row => row[0]).filter(number => number);
+  return recipientNumbers;
+}
+
+// Run the broadcast
+async function run() {
+  console.log("Loading recipient numbers from Excel...");
+  const recipientNumbers = await loadRecipientsFromExcel();
+
+  console.log("Sending broadcast...");
+  await sendBroadcast(templateName, imageUrl, recipientNumbers);
+
+  console.log("Broadcast completed.");
+}
+
+run().catch(error => {
+  console.error("An error occurred:", error);
+  process.exit(1);
+});
