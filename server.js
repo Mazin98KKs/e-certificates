@@ -13,6 +13,8 @@ const stripeLib = require('stripe');
 const winston = require('winston');
 const path = require('path');
 
+const app = express();
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Load environment variables from .env file
