@@ -331,7 +331,7 @@ logCertificateDetails(from, recipientName, recipientNumber);
           text: recipientName,
         },
         gravity: "center",
-        y: -10,
+        y: -20,
       },
     ],
   });
