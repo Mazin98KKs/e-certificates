@@ -1,31 +1,48 @@
-require('dotenv').config();
+// Define environment variables directly in the code
+const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0/533978409805057/messages';
+const WHATSAPP_API_TOKEN = 'EAAIIvDZBBh5sBO5H9LMaa4iZAHqh8ab5a3jz1ZBaz0VbX0rjNS6ghEEDIEZA4txm6OuVpXcWYlVS65dQHj10ynNRxzZAppz0oGA6nBsmGlswRsKzK7kotSv65zd1nyKmWUj1XGrLjHUbB3bl8iUYkHr7Yxm9P0riETWHMwDxEqphZCsaqIedPXi6gtt1fZBaWhOkgZDZD';
+
+if (!WHATSAPP_API_URL || !WHATSAPP_API_TOKEN) {
+  console.error('Missing required environment variables for WhatsApp API.');
+  process.exit(1);
+}
+
 const axios = require('axios');
+const xlsx = require('xlsx');
 const cloudinary = require('cloudinary').v2;
 
-// Configure Cloudinary using your environment variable
-cloudinary.config(process.env.CLOUDINARY_URL);
+// Cloudinary configuration
+cloudinary.config({
+  cloud_name: 'dp9frbsjx',
+  api_key: '772247735598813',
+  api_secret: 'Pumk8FjFOB6AF56sqrFF-7zfFJE',
+});
 
-if (!process.env.WHATSAPP_API_URL || !process.env.WHATSAPP_API_TOKEN) {
-  console.error("Missing required environment variables for WhatsApp API");
-  process.exit(1);
+console.log("Cloudinary Config Loaded:", cloudinary.config());
+
+// Path to the Excel file
+const filePath = './recipients.xlsx';
+
+// Cloudinary Public ID of the image
+const cloudinaryPublicId = 'bestfriend_aamfqh';
+
+// Load recipients from Excel
+function loadRecipientsFromExcel(filePath) {
+  const workbook = xlsx.readFile(filePath);
+  const sheetName = workbook.SheetNames[0];
+  const sheet = workbook.Sheets[sheetName];
+  const data = xlsx.utils.sheet_to_json(sheet);
+  const recipientNumbers = data.map(row => row.PhoneNumber).filter(num => !!num);
+  return recipientNumbers;
 }
 
-// Define the Cloudinary public ID and generate the URL
-const publicId = "bestfriend_aamfqh";
-const imageUrl = cloudinary.url(publicId);
+// Main broadcast function
+async function sendBroadcast(templateName, cloudinaryId, recipientNumbers) {
+  const url = WHATSAPP_API_URL;
+  const token = WHATSAPP_API_TOKEN;
 
-if (!imageUrl) {
-  console.error("Failed to generate Cloudinary image URL");
-  process.exit(1);
-}
-
-// Define the WhatsApp template name
-const templateName = "gift2";
-
-// The main function to send a broadcast
-async function sendBroadcast(templateName, imageUrl, recipientNumbers) {
-  const url = process.env.WHATSAPP_API_URL;
-  const token = process.env.WHATSAPP_API_TOKEN;
+  // Cloudinary URL for the image based on the public ID
+  const imageUrl = cloudinary.url(cloudinaryId);
 
   for (const recipient of recipientNumbers) {
     try {
@@ -65,31 +82,19 @@ async function sendBroadcast(templateName, imageUrl, recipientNumbers) {
   }
 }
 
-// A simple function to load numbers from a local Excel file (e.g., "recipients.xlsx")
-async function loadRecipientsFromExcel() {
-  const xlsx = require('xlsx');
-  const workbook = xlsx.readFile('recipients.xlsx');
-  const sheetName = workbook.SheetNames[0];
-  const sheet = workbook.Sheets[sheetName];
-  const data = xlsx.utils.sheet_to_json(sheet, { header: 1 });
+// Load recipients and call the broadcast function
+(async () => {
+  try {
+    const recipients = loadRecipientsFromExcel(filePath);
+    if (!recipients.length) {
+      console.error('No recipients found in the Excel sheet.');
+      return;
+    }
 
-  // Assuming the numbers are in the first column
-  const recipientNumbers = data.map(row => row[0]).filter(number => number);
-  return recipientNumbers;
-}
-
-// Run the broadcast
-async function run() {
-  console.log("Loading recipient numbers from Excel...");
-  const recipientNumbers = await loadRecipientsFromExcel();
-
-  console.log("Sending broadcast...");
-  await sendBroadcast(templateName, imageUrl, recipientNumbers);
-
-  console.log("Broadcast completed.");
-}
-
-run().catch(error => {
-  console.error("An error occurred:", error);
-  process.exit(1);
-});
+    console.log(`Sending messages to ${recipients.length} recipients...`);
+    await sendBroadcast('gift2', cloudinaryPublicId, recipients);
+    console.log('Broadcast complete.');
+  } catch (error) {
+    console.error('Error during broadcast process:', error.message);
+  }
+})();

@@ -4,6 +4,7 @@ const bodyParser = require('body-parser');
 const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const fs = require('fs');
 
 const app = express();
 
@@ -75,6 +76,20 @@ const certificateToPriceMap = {
   9: "price_1QlwAGBH45p3WHSst46YVwME",
   10: "price_1QlwAiBH45p3WHSsmU4G4EXn",
 };
+
+
+// Add this function near the top of your code:
+function logCertificateDetails(senderNumber, recipientName, recipientNumber) {
+  const fs = require('fs');
+  const path = require('path');
+  const filePath = path.join(__dirname, 'sent_certificates.txt');
+
+  const logEntry = `${senderNumber}, ${recipientName}, ${recipientNumber}\n`;
+  fs.appendFileSync(filePath, logEntry, 'utf8');
+
+  console.log('Logged certificate details.');
+}
+
 
 /**
  * Webhook Verification Endpoint
@@ -298,6 +313,7 @@ async function sendWelcomeTemplate(to) {
  */
 async function sendCertificateImage(recipient, certificateId, recipientName) {
   console.log(`Generating certificate image for ID: ${certificateId}, Name: ${recipientName}`);
+logCertificateDetails(from, recipientName, recipientNumber);
 
   if (!certificateId || !CERTIFICATE_PUBLIC_IDS[certificateId]) {
     console.error(`Invalid certificate ID: ${certificateId}`);
