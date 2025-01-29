@@ -263,7 +263,7 @@ async function handleUserMessage(from, message) {
         await sendWelcomeTemplate(from);
       } else if (/^لا$/i.test(choice.trim())) {
         await sendWhatsAppText(from, "تم إنهاء الجلسة. شكراً.");
-        delete userSessions[from];
+                delete userSessions[from];
       } else {
         await sendWhatsAppText(from, "يرجى الرد بـ (نعم/لا).");
       }
