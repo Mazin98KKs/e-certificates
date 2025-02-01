@@ -92,7 +92,7 @@ async function sendBroadcast(templateName, cloudinaryId, recipientNumbers) {
     }
 
     console.log(`Sending messages to ${recipients.length} recipients...`);
-    await sendBroadcast('gift2', cloudinaryPublicId, recipients);
+    await sendBroadcast('gift1', cloudinaryPublicId, recipients);
     console.log('Broadcast complete.');
   } catch (error) {
     console.error('Error during broadcast process:', error.message);

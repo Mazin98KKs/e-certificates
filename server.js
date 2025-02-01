@@ -394,7 +394,7 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
           text: recipientName,
         },
         gravity: "center",
-        y: -20,
+        y: -30,
       },
     ],
   });
@@ -519,7 +519,7 @@ app.post('/stripe-webhook', async (req, res) => {
             text: recipientName,
           },
           gravity: "center",
-          y: -20,
+          y: -30,
         },
       ],
     });
