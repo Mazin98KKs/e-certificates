@@ -258,7 +258,7 @@ async function handleUserMessage(from, message) {
       if (choice) {
         session.recipientName = choice;
         session.step = 'ask_recipient_number';
-        await sendWhatsAppText(from, "ادخل رقم واتساب المستلم مع رمز الدولة. مثال: \nلعمان: 96890000000\nللولايات المتحدة: 12125550123");
+        await sendWhatsAppText(from, "ادخل رقم واتساب المستلم مع رمز الدولة. مثال: \nلعمان: 96890000000\nللسعودية: 966500000000");
       } else {
         await sendWhatsAppText(from, "يرجى إدخال اسم صحيح.");
       }
