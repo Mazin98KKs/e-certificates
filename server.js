@@ -5,14 +5,15 @@ const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const fs = require('fs');
+const path = require('path');
+const ExcelJS = require('exceljs'); // For Excel logging
+const { parsePhoneNumberFromString } = require('libphonenumber-js'); // For international phone validation
 
 const app = express();
 
 // Cloudinary configuration
 cloudinary.config(process.env.CLOUDINARY_URL);
 console.log("Cloudinary Config Loaded:", cloudinary.config());
-
-
 
 // Middleware for parsing JSON bodies for WhatsApp messages
 app.use('/webhook', bodyParser.json());
@@ -23,7 +24,7 @@ app.use('/stripe-webhook', bodyParser.raw({ type: 'application/json' }));
 // In-memory user sessions
 const userSessions = {};
 
-// Conversation counter
+// Conversation counter (for rate limiting new sessions)
 const initiatedConversations = new Set();
 let initiatedCount = 0;
 
@@ -33,8 +34,8 @@ setInterval(() => {
   initiatedCount = 0;
 }, 24 * 60 * 60 * 1000);
 
-// Session timeout configuration
-const sessionTimeoutMs = 5 * 60 * 1000; // 5 minutes in milliseconds
+// Session timeout configuration (5 minutes)
+const sessionTimeoutMs = 5 * 60 * 1000;
 
 // Periodically clean up expired sessions
 setInterval(() => {
@@ -46,7 +47,7 @@ setInterval(() => {
       delete userSessions[userId];
     }
   }
-}, 30 * 1000); // Run this check every 30 seconds
+}, 30 * 1000);
 
 // Map of certificates to Cloudinary public IDs
 const CERTIFICATE_PUBLIC_IDS = {
@@ -77,31 +78,69 @@ const certificateToPriceMap = {
   10: "price_1QlwAiBH45p3WHSsmU4G4EXn",
 };
 
-
-// Add this function near the top of your code:
-function logCertificateDetails(senderNumber, recipientName, recipientNumber) {
-  const fs = require('fs');
-  const path = require('path');
-  const filePath = path.join(__dirname, 'sent_certificates.txt');
-
-  const logEntry = `${senderNumber}, ${recipientName}, ${recipientNumber}\n`;
-  fs.appendFileSync(filePath, logEntry, 'utf8');
-
-  console.log('Logged certificate details.');
+/**
+ * Validates and formats an international phone number.
+ * It accepts a number with country code (digits only) or with extra characters,
+ * and returns the number in E.164 format without the leading plus sign.
+ *
+ * @param {string} input - The phone number input from the user.
+ * @returns {string|null} - The formatted phone number (e.g., "96890000000") or null if invalid.
+ */
+function validateAndFormatInternationalPhoneNumber(input) {
+  // Remove all non-digit characters.
+  let cleaned = input.replace(/\D/g, '');
+  // Prepend a plus sign so the library can recognize it as an international number.
+  const phoneToParse = '+' + cleaned;
+  const phoneNumber = parsePhoneNumberFromString(phoneToParse);
+  
+  if (phoneNumber && phoneNumber.isValid()) {
+    // Format in E.164 (e.g., "+96890000000") then remove the plus sign.
+    const formatted = phoneNumber.format('E.164');
+    return formatted.substring(1);
+  }
+  return null;
 }
 
+/**
+ * Log certificate details in an Excel file.
+ * Each time a certificate is sent, a new row is appended to
+ * an Excel file called "sent_certificates.xlsx" in the same directory.
+ */
+async function logCertificateDetails(senderNumber, recipientName, recipientNumber) {
+  const filePath = path.join(__dirname, 'sent_certificates.xlsx');
+  const workbook = new ExcelJS.Workbook();
+  let worksheet;
+
+  // Check if the file exists
+  if (fs.existsSync(filePath)) {
+    await workbook.xlsx.readFile(filePath);
+    worksheet = workbook.getWorksheet("sent certificates");
+    if (!worksheet) {
+      worksheet = workbook.addWorksheet("sent certificates");
+      // Add header row if not present
+      worksheet.addRow(["Timestamp", "Sender Number", "Recipient Name", "Recipient Number"]);
+    }
+  } else {
+    // Create new workbook and worksheet with header row
+    worksheet = workbook.addWorksheet("sent certificates");
+    worksheet.addRow(["Timestamp", "Sender Number", "Recipient Name", "Recipient Number"]);
+  }
+
+  const timestamp = new Date().toISOString();
+  worksheet.addRow([timestamp, senderNumber, recipientName, recipientNumber]);
+  await workbook.xlsx.writeFile(filePath);
+  console.log('Logged certificate details in Excel.');
+}
 
 /**
  * Webhook Verification Endpoint
  */
 app.get('/webhook', (req, res) => {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'mysecrettoken';
-
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
-  // Log the verification request for debugging
   console.log(`Webhook verification request: mode=${mode}, token=${token}, challenge=${challenge}`);
 
   if (mode && token) {
@@ -135,11 +174,11 @@ app.post('/webhook', async (req, res) => {
             const text = message.text?.body || '';
             console.log(`Incoming message from ${from}: ${text}`);
 
-            // Add conversation counter check here:
+            // Rate limit new sessions by counting initiated conversations
             if (!initiatedConversations.has(from)) {
               if (initiatedCount >= 990) {
                 await sendWhatsAppText(from, "Sorry, we're busy now. Please try again later.");
-                continue; // Skip further processing for new conversations
+                continue; // Skip processing for new conversations
               }
               initiatedConversations.add(from);
               initiatedCount++;
@@ -150,9 +189,7 @@ app.post('/webhook', async (req, res) => {
         }
       }
     }
-
-    // Acknowledge receipt of the webhook
-    res.sendStatus(200);
+    res.sendStatus(200); // Acknowledge receipt
   } catch (error) {
     console.error('Error processing incoming WhatsApp message:', error.message);
     res.sendStatus(500);
@@ -160,127 +197,151 @@ app.post('/webhook', async (req, res) => {
 });
 
 /**
- * Handle the conversation logic
+ * Handle the conversation logic.
+ * 
+ * Global commands:
+ *   - "مرحبا": Starts/resets the conversation (welcome template is sent)
+ *   - "وقف": Ends the session immediately
+ * If no session exists and the command is not recognized, prompt the user.
  */
 async function handleUserMessage(from, message) {
-  const choice = message.interactive?.button_reply?.id || message.text?.body;
+  const choiceRaw = message.interactive?.button_reply?.id || message.text?.body;
+  const choice = choiceRaw ? choiceRaw.trim() : '';
 
-  if (!choice) {
-    await sendWhatsAppText(from, "لم أفهم رسالتك. يرجى المحاولة مرة أخرى.");
+  // Global command: start/restart the conversation
+  if (choice === "مرحبا") {
+    userSessions[from] = { step: 'welcome', certificatesSent: 0, lastActivity: Date.now() };
+    await sendWelcomeTemplate(from);
+    userSessions[from].step = 'select_certificate';
     return;
   }
 
-  let session = userSessions[from];
-
-  // If the user starts a new conversation, reset their session
-  if (!session || /^(hello|hi|مرحبا|ابدأ)$/i.test(choice.trim())) {
-    session = { step: 'welcome', certificatesSent: 0 };
-    userSessions[from] = session;
+  // Global command: stop/end the conversation
+  if (choice === "وقف") {
+    if (userSessions[from]) {
+      delete userSessions[from];
+    }
+    await sendWhatsAppText(from, "تم إنهاء الجلسة. شكراً.");
+    return;
   }
-  // Update last activity time
+
+  // If no active session exists, prompt the user to choose either "مرحبا" or "وقف"
+  if (!userSessions[from]) {
+    await sendWhatsAppText(from, "يرجى اختيار إما 'مرحبا' لبدء الجلسة أو 'وقف' لإنهائها.");
+    return;
+  }
+
+  // Update the session's last activity time
+  const session = userSessions[from];
   session.lastActivity = Date.now();
 
+  // Process the conversation steps based on the session state
   switch (session.step) {
     case 'welcome':
       await sendWelcomeTemplate(from);
       session.step = 'select_certificate';
       break;
 
-    case 'select_certificate':
-      {
-        const certificateChoice = parseInt(choice.trim(), 10);
-        if (certificateChoice && certificateChoice >= 1 && certificateChoice <= 10) {
-          session.selectedCertificate = certificateChoice;
-          session.step = 'ask_recipient_name';
-          await sendWhatsAppText(from, "وش اسم الشخص اللي ودك ترسله الشهاده");
-        } else {
-          await sendWhatsAppText(from, "يرجى اختيار رقم صحيح من 1 إلى 10.");
-        }
+    case 'select_certificate': {
+      const certificateChoice = parseInt(choice, 10);
+      if (certificateChoice && certificateChoice >= 1 && certificateChoice <= 10) {
+        session.selectedCertificate = certificateChoice;
+        session.step = 'ask_recipient_name';
+        await sendWhatsAppText(from, "وش اسم الشخص اللي ودك ترسله الشهاده");
+      } else {
+        await sendWhatsAppText(from, "يرجى اختيار رقم صحيح من 1 إلى 10.");
       }
       break;
+    }
 
-    case 'ask_recipient_name':
-      {
-        if (choice.trim()) {
-          session.recipientName = choice.trim();
-          session.step = 'ask_recipient_number';
-          await sendWhatsAppText(from, "ادخل رقم واتساب المستلم مع رمز الدولة مثال اذا كان من عمان (968) \nادخل: \n96890000000");
-
-        } else {
-          await sendWhatsAppText(from, "يرجى إدخال اسم صحيح.");
-        }
+    case 'ask_recipient_name': {
+      if (choice) {
+        session.recipientName = choice;
+        session.step = 'ask_recipient_number';
+        await sendWhatsAppText(from, "ادخل رقم واتساب المستلم مع رمز الدولة. مثال: \nلعمان: 96890000000\nللولايات المتحدة: 12125550123");
+      } else {
+        await sendWhatsAppText(from, "يرجى إدخال اسم صحيح.");
       }
       break;
+    }
 
-    case 'ask_recipient_number':
-      {
-        const recipientNumber = choice.trim();
-        if (/^\d{10,15}$/.test(recipientNumber)) {
-          session.recipientNumber = recipientNumber;
-          session.step = 'confirm_send';
-          await sendWhatsAppText(from, `سيتم إرسال الشهادة إلى ${session.recipientName}. هل تريد إرسالها الآن؟ (نعم/لا)`);
-        } else {
-          await sendWhatsAppText(from, "يرجى إدخال رقم صحيح يشمل رمز الدولة.");
-        }
+    case 'ask_recipient_number': {
+      // Validate and format the phone number using our new function.
+      const formattedNumber = validateAndFormatInternationalPhoneNumber(choice);
+      if (formattedNumber) {
+        session.recipientNumber = formattedNumber;
+        session.step = 'confirm_send';
+        await sendWhatsAppText(from, `سيتم إرسال الشهادة إلى ${session.recipientName} على الرقم: ${formattedNumber}. هل تريد إرسالها الآن؟ (نعم/لا)`);
+      } else {
+        await sendWhatsAppText(from, "يرجى إدخال رقم صحيح يشمل رمز الدولة. مثال: 96890000000");
       }
       break;
+    }
 
-    case 'confirm_send':
-      {
-        if (/^نعم$/i.test(choice.trim())) {
-          if (FREE_CERTIFICATES.includes(session.selectedCertificate)) {
-            await sendCertificateImage(session.recipientNumber, session.selectedCertificate, session.recipientName);
-            session.certificatesSent++;
-            await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
-            session.step = 'ask_another';
-            await sendWhatsAppText(from, "هل ترغب في إرسال شهادة أخرى؟ (نعم/لا)");
+    case 'confirm_send': {
+      if (/^نعم$/i.test(choice)) {
+        if (FREE_CERTIFICATES.includes(session.selectedCertificate)) {
+          // For free certificates, send the certificate image immediately
+          await sendCertificateImage(from, session.recipientNumber, session.selectedCertificate, session.recipientName);
+          session.certificatesSent++;
+          await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
+          session.step = 'ask_another';
+          await sendWhatsAppText(from, "هل ترغب في إرسال شهادة أخرى؟ (نعم/لا)");
+        } else {
+          // For paid certificates, create a Stripe session and ask for payment
+          const stripeSessionUrl = await createStripeCheckoutSession(
+            session.selectedCertificate,
+            from,
+            session.recipientNumber,
+            session.recipientName
+          );
+          if (stripeSessionUrl) {
+            session.paymentPending = true;
+            await sendWhatsAppText(from, `لإتمام العمليه يمكنك الدفع عن طريق نظام آبل من خلال الرابط الاتي:\n${stripeSessionUrl}`);
+            session.step = 'await_payment';
           } else {
-            const stripeSessionUrl = await createStripeCheckoutSession(session.selectedCertificate, from, session.recipientNumber, session.recipientName);
-            if (stripeSessionUrl) {
-              session.paymentPending = true;
-              await sendWhatsAppText(from, `لإتمام العمليه يمكنك الدفع عن طريق نظام آبل من خلال الرابط الاتي:\n${stripeSessionUrl}`);
-              session.step = 'await_payment';
-            } else {
-              await sendWhatsAppText(from, "حدث خطأ في إنشاء جلسة الدفع. حاول مرة أخرى.");
-            }
+            await sendWhatsAppText(from, "حدث خطأ في إنشاء جلسة الدفع. حاول مرة أخرى.");
           }
-        } else if (/^لا$/i.test(choice.trim())) {
-          await sendWhatsAppText(from, "تم إنهاء الجلسة. شكراً.");
-          delete userSessions[from];
-        } else {
-          await sendWhatsAppText(from, "يرجى الرد بـ (نعم/لا).");
         }
+      } else if (/^لا$/i.test(choice)) {
+        await sendWhatsAppText(from, "تم إنهاء الجلسة. شكراً.");
+        delete userSessions[from];
+      } else {
+        await sendWhatsAppText(from, "يرجى الرد بـ (نعم/لا).");
       }
       break;
+    }
 
     case 'await_payment':
       await sendWhatsAppText(from, "ننتظر تأكيد الدفع...");
       break;
 
-    case 'ask_another':
-      if (/^نعم$/i.test(choice.trim())) {
+    case 'ask_another': {
+      if (/^نعم$/i.test(choice)) {
         session.step = 'welcome';
         await sendWelcomeTemplate(from);
-      } else if (/^لا$/i.test(choice.trim())) {
-        await sendWhatsAppText(from, "تم إنهاء الجلسة. شكراً.");
-                delete userSessions[from];
+        session.step = 'select_certificate';
+      } else if (/^لا$/i.test(choice)) {
+        await sendWhatsAppText(from, "تم إنهاء المحادثة. شكراً.");
+        delete userSessions[from];
       } else {
         await sendWhatsAppText(from, "يرجى الرد بـ (نعم/لا).");
       }
       break;
+    }
 
     default:
-      await sendWhatsAppText(from, "حدث خطأ. أرسل 'مرحبا' أو 'ابدأ' لتجربة جديدة.");
-      userSessions[from] = { step: 'welcome', certificatesSent: 0 };
+      await sendWhatsAppText(from, "حدث خطأ. أرسل 'مرحبا' أو 'وقف' لتجربة جديدة.");
+      userSessions[from] = { step: 'welcome', certificatesSent: 0, lastActivity: Date.now() };
       break;
   }
 
-  // Update the session
+  // Update the session (optional since session is a reference)
   userSessions[from] = session;
 }
 
 /**
- * Send a welcome template
+ * Send a welcome template via WhatsApp.
  */
 async function sendWelcomeTemplate(to) {
   try {
@@ -309,11 +370,12 @@ async function sendWelcomeTemplate(to) {
 }
 
 /**
- * Send the certificate image
+ * Send the certificate image.
+ * Now accepts the sender's number as well for logging purposes.
  */
-async function sendCertificateImage(recipient, certificateId, recipientName) {
-  console.log(`Generating certificate image for ID: ${certificateId}, Name: ${recipientName}`);
-logCertificateDetails(from, recipientName, recipientNumber);
+async function sendCertificateImage(sender, recipient, certificateId, recipientName) {
+  console.log(`Generating certificate image for Certificate ID: ${certificateId}, Recipient Name: ${recipientName}`);
+  await logCertificateDetails(sender, recipientName, recipient);
 
   if (!certificateId || !CERTIFICATE_PUBLIC_IDS[certificateId]) {
     console.error(`Invalid certificate ID: ${certificateId}`);
@@ -322,6 +384,7 @@ logCertificateDetails(from, recipientName, recipientNumber);
 
   const certificatePublicId = CERTIFICATE_PUBLIC_IDS[certificateId];
 
+  // Generate the certificate image URL using Cloudinary transformations
   const certificateImageUrl = cloudinary.url(certificatePublicId, {
     transformation: [
       {
@@ -384,7 +447,7 @@ logCertificateDetails(from, recipientName, recipientNumber);
 }
 
 /**
- * Create a Stripe checkout session for paid certificates
+ * Create a Stripe checkout session for paid certificates.
  */
 async function createStripeCheckoutSession(certificateId, senderNumber, recipientNumber, recipientName) {
   const priceId = certificateToPriceMap[certificateId];
@@ -396,9 +459,7 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
   try {
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
-      line_items: [
-        { price: priceId, quantity: 1 },
-      ],
+      line_items: [{ price: priceId, quantity: 1 }],
       mode: 'payment',
       metadata: {
         senderNumber,
@@ -420,7 +481,7 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
 
 /**
  * Stripe Webhook Endpoint
- * Listens for checkout.session.completed events and triggers the certificate sending
+ * Listens for checkout.session.completed events and triggers the certificate sending.
  */
 app.post('/stripe-webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
@@ -429,23 +490,18 @@ app.post('/stripe-webhook', async (req, res) => {
   console.log("Using webhook secret:", process.env.STRIPE_WEBHOOK_SECRET);
 
   let event;
-
   try {
-    // Pass the raw body, the signature header, and the endpoint secret to constructEvent
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
-    // Log detailed debugging information
     console.error("Signature verification error:", err.message);
     console.error("Raw request body:", req.body.toString('utf8'));
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Handle the event
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const { senderNumber, recipientNumber, certificateId, recipientName } = session.metadata;
 
-    // Validate metadata fields
     if (!senderNumber || !recipientNumber || !certificateId || !recipientName) {
       console.error("Missing metadata fields in checkout.session.completed event.");
       return res.sendStatus(400);
@@ -453,26 +509,22 @@ app.post('/stripe-webhook', async (req, res) => {
 
     console.log(`Payment completed! Sender: ${senderNumber}, Recipient: ${recipientNumber}, Certificate ID: ${certificateId}, Name: ${recipientName}`);
 
-    // Send the certificate image
-    const certificateImageUrl = cloudinary.url(
-      CERTIFICATE_PUBLIC_IDS[certificateId],
-      {
-        transformation: [
-          {
-            overlay: {
-              font_family: "Arial",
-              font_size: 80,
-              text: recipientName,
-            },
-            gravity: "center",
-            y: -20,
+    // Generate the certificate image URL using Cloudinary transformations
+    const certificateImageUrl = cloudinary.url(CERTIFICATE_PUBLIC_IDS[certificateId], {
+      transformation: [
+        {
+          overlay: {
+            font_family: "Arial",
+            font_size: 80,
+            text: recipientName,
           },
-        ],
-      }
-    );
+          gravity: "center",
+          y: -20,
+        },
+      ],
+    });
 
     try {
-      // Send certificate to recipient
       await axios.post(
         process.env.WHATSAPP_API_URL,
         {
@@ -513,16 +565,11 @@ app.post('/stripe-webhook', async (req, res) => {
           },
         }
       );
-
       console.log(`Certificate sent to ${recipientNumber}`);
     } catch (error) {
-      console.error(
-        `Failed to send certificate to ${recipientNumber}:`,
-        error.response?.data || error.message
-      );
+      console.error(`Failed to send certificate to ${recipientNumber}:`, error.response?.data || error.message);
     }
 
-    // Send confirmation message to the sender
     try {
       await axios.post(
         process.env.WHATSAPP_API_URL,
@@ -530,9 +577,7 @@ app.post('/stripe-webhook', async (req, res) => {
           messaging_product: 'whatsapp',
           to: senderNumber,
           type: 'text',
-          text: {
-            body: `شكراً للدفع! الشهادة تم إرسالها بنجاح إلى ${recipientName}.`,
-          },
+          text: { body: `شكراً للدفع! الشهادة تم إرسالها بنجاح إلى ${recipientName}.` },
         },
         {
           headers: {
@@ -541,30 +586,24 @@ app.post('/stripe-webhook', async (req, res) => {
           },
         }
       );
-
       console.log(`Payment confirmation sent to ${senderNumber}`);
     } catch (error) {
-      console.error(
-        `Failed to send confirmation to ${senderNumber}:`,
-        error.response?.data || error.message
-      );
+      console.error(`Failed to send confirmation to ${senderNumber}:`, error.response?.data || error.message);
     }
 
-    // Terminate the session after sending the confirmation
+    console.log(`Terminating session for ${senderNumber}`);
     if (senderNumber) {
-      console.log(`Terminating session for ${senderNumber}`);
       delete userSessions[senderNumber];
     }
   } else {
     console.log(`Unhandled event type ${event.type}`);
   }
 
-  // Return a response to acknowledge receipt of the event
   res.sendStatus(200);
 });
 
 /**
- * Send a simple WhatsApp text message
+ * Send a simple WhatsApp text message.
  */
 async function sendWhatsAppText(to, message) {
   try {
@@ -589,7 +628,7 @@ async function sendWhatsAppText(to, message) {
   }
 }
 
-// Add this route for monitoring initiated conversations
+// Endpoint for monitoring initiated conversations
 app.get('/status', (req, res) => {
   res.json({ initiatedConversations: initiatedCount });
 });
