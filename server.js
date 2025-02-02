@@ -55,7 +55,7 @@ const CERTIFICATE_PUBLIC_IDS = {
   2: "malgof_egqihg",
   3: "kfoo_ncybxx",
   4: "lazy_vndi9i",
-  5: "Mokaf7_vetjxx",
+  5: "Mokaf7_wdocgh",
   6: "donothing_nvdhcx",
   7: "knoweverything_vppbsa",
   8: "friendly_e7szzo",
@@ -304,7 +304,7 @@ async function handleUserMessage(from, message) {
           }
         }
       } else if (/^لا$/i.test(choice)) {
-        await sendWhatsAppText(from, "تم إنهاء الجلسة. شكراً.");
+        await sendWhatsAppText(from, "تم إنهاء المحادثة. شكراً.");
         delete userSessions[from];
       } else {
         await sendWhatsAppText(from, "يرجى الرد بـ (نعم/لا).");
@@ -469,6 +469,7 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
       },
       success_url: `https://e-certificates.onrender.com/success.html`,
       cancel_url: `https://e-certificates.onrender.com/cancel.html`,
+      billing_address_collection: 'none',
     });
 
     console.log(`Stripe checkout session created: ${session.id}`);
