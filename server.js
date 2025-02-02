@@ -584,7 +584,7 @@ async function sendWhatsAppText(to, message) {
   } catch (error) {
     console.error('Error sending WhatsApp text:', error.response?.data || error.message);
   }
-});
+}
 
 // Endpoint for monitoring initiated conversations
 app.get('/status', (req, res) => {
