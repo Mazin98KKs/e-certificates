@@ -7,7 +7,7 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs'); // For Excel logging
-const { parsePhoneNumberFromString } = require('libphonenumber-js');
+const { parsePhoneNumberFromString } = require('libphonenumber-js'); // For international phone validation
 
 const app = express();
 
@@ -79,21 +79,49 @@ const certificateToPriceMap = {
 };
 
 /**
+ * Validates and formats an international phone number.
+ * It accepts a number with country code (digits only) or with extra characters,
+ * and returns the number in E.164 format without the leading plus sign.
+ *
+ * @param {string} input - The phone number input from the user.
+ * @returns {string|null} - The formatted phone number (e.g., "96890000000") or null if invalid.
+ */
+function validateAndFormatInternationalPhoneNumber(input) {
+  // Remove all non-digit characters.
+  let cleaned = input.replace(/\D/g, '');
+  // Prepend a plus sign so the library can recognize it as an international number.
+  const phoneToParse = '+' + cleaned;
+  const phoneNumber = parsePhoneNumberFromString(phoneToParse);
+
+  if (phoneNumber && phoneNumber.isValid()) {
+    // Format in E.164 (e.g., "+96890000000") then remove the plus sign.
+    const formatted = phoneNumber.format('E.164');
+    return formatted.substring(1);
+  }
+  return null;
+}
+
+/**
  * Log certificate details in an Excel file.
+ * Each time a certificate is sent, a new row is appended to
+ * an Excel file called "sent_certificates.xlsx" in the same directory.
  */
 async function logCertificateDetails(senderNumber, recipientName, recipientNumber) {
   const filePath = path.join(__dirname, 'sent_certificates.xlsx');
   const workbook = new ExcelJS.Workbook();
   let worksheet;
 
+  // Check if the file exists
   if (fs.existsSync(filePath)) {
     await workbook.xlsx.readFile(filePath);
     worksheet = workbook.getWorksheet("sent certificates");
     if (!worksheet) {
       worksheet = workbook.addWorksheet("sent certificates");
+      // Add header row if not present
       worksheet.addRow(["Timestamp", "Sender Number", "Recipient Name", "Recipient Number"]);
     }
   } else {
+    // Create new workbook and worksheet with header row
     worksheet = workbook.addWorksheet("sent certificates");
     worksheet.addRow(["Timestamp", "Sender Number", "Recipient Name", "Recipient Number"]);
   }
@@ -109,7 +137,6 @@ async function logCertificateDetails(senderNumber, recipientName, recipientNumbe
  */
 app.get('/webhook', (req, res) => {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'mysecrettoken';
-
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
@@ -147,10 +174,11 @@ app.post('/webhook', async (req, res) => {
             const text = message.text?.body || '';
             console.log(`Incoming message from ${from}: ${text}`);
 
+            // Rate limit new sessions by counting initiated conversations
             if (!initiatedConversations.has(from)) {
               if (initiatedCount >= 990) {
                 await sendWhatsAppText(from, "Sorry, we're busy now. Please try again later.");
-                continue;
+                continue; // Skip processing for new conversations
               }
               initiatedConversations.add(from);
               initiatedCount++;
@@ -161,7 +189,7 @@ app.post('/webhook', async (req, res) => {
         }
       }
     }
-    res.sendStatus(200);
+    res.sendStatus(200); // Acknowledge receipt
   } catch (error) {
     console.error('Error processing incoming WhatsApp message:', error.message);
     res.sendStatus(500);
@@ -175,6 +203,7 @@ async function handleUserMessage(from, message) {
   const choiceRaw = message.interactive?.button_reply?.id || message.text?.body;
   const choice = choiceRaw ? choiceRaw.trim() : '';
 
+  // Global command: start/restart the conversation
   if (choice === "مرحبا") {
     userSessions[from] = { step: 'welcome', certificatesSent: 0, lastActivity: Date.now() };
     await sendWelcomeTemplate(from);
@@ -182,19 +211,22 @@ async function handleUserMessage(from, message) {
     return;
   }
 
+  // Global command: stop/end the conversation
   if (choice === "وقف") {
     if (userSessions[from]) {
       delete userSessions[from];
     }
-    await sendWhatsAppText(from, "تم إنهاء المحادثة. شكراً.");
+    await sendWhatsAppText(from, "تم إنهاء الجلسة. شكراً.");
     return;
   }
 
+  // If no active session exists, prompt the user to choose either "مرحبا" or "وقف"
   if (!userSessions[from]) {
-    await sendWhatsAppText(from, "يرجى اختيار إما 'مرحبا' لبدء الخدمة أو 'وقف' لإنهائها.");
+    await sendWhatsAppText(from, "يرجى اختيار إما 'مرحبا' لبدء الجلسة أو 'وقف' لإنهائها.");
     return;
   }
 
+  // Update the session's last activity time
   const session = userSessions[from];
   session.lastActivity = Date.now();
 
@@ -242,7 +274,8 @@ async function handleUserMessage(from, message) {
     case 'confirm_send': {
       if (/^نعم$/i.test(choice)) {
         if (FREE_CERTIFICATES.includes(session.selectedCertificate)) {
-          await sendCertificateImage(session.recipientNumber, session.selectedCertificate, session.recipientName);
+          // For free certificates, send the certificate image immediately
+          await sendCertificateImage(from, session.recipientNumber, session.selectedCertificate, session.recipientName);
           session.certificatesSent++;
           await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
           session.step = 'ask_another';
@@ -265,7 +298,7 @@ async function handleUserMessage(from, message) {
       } else if (/^لا$/i.test(choice)) {
         await sendWhatsAppText(from, "تم إنهاء المحادثة. شكراً.");
         delete userSessions[from];
-        return;  // EXIT so that the session is not updated further.
+        return; // Exit so that the session isn't updated further.
       } else {
         await sendWhatsAppText(from, "يرجى الرد بـ (نعم/لا).");
       }
@@ -296,7 +329,7 @@ async function handleUserMessage(from, message) {
       break;
   }
 
-  // Update the session (unless already deleted)
+  // Update the session if it still exists
   if (userSessions[from]) {
     userSessions[from] = session;
   }
@@ -333,7 +366,7 @@ async function sendWelcomeTemplate(to) {
 
 /**
  * Send the certificate image.
- * Now accepts the sender's number for logging purposes.
+ * Accepts the sender's number for logging purposes.
  */
 async function sendCertificateImage(sender, recipient, certificateId, recipientName) {
   console.log(`Generating certificate image for Certificate ID: ${certificateId}, Recipient Name: ${recipientName}`);
@@ -384,10 +417,7 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
             {
               type: 'body',
               parameters: [
-                {
-                  type: 'text',
-                  text: recipientName,
-                },
+                { type: 'text', text: recipientName },
               ],
             },
           ],
@@ -450,7 +480,6 @@ app.post('/stripe-webhook', async (req, res) => {
   console.log("Using webhook secret:", process.env.STRIPE_WEBHOOK_SECRET);
 
   let event;
-
   try {
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
@@ -584,7 +613,7 @@ async function sendWhatsAppText(to, message) {
   } catch (error) {
     console.error('Error sending WhatsApp text:', error.response?.data || error.message);
   }
-}
+});
 
 // Endpoint for monitoring initiated conversations
 app.get('/status', (req, res) => {
