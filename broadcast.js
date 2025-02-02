@@ -9,22 +9,9 @@ if (!WHATSAPP_API_URL || !WHATSAPP_API_TOKEN) {
 
 const axios = require('axios');
 const xlsx = require('xlsx');
-const cloudinary = require('cloudinary').v2;
-
-// Cloudinary configuration
-cloudinary.config({
-  cloud_name: 'dp9frbsjx',
-  api_key: '772247735598813',
-  api_secret: 'Pumk8FjFOB6AF56sqrFF-7zfFJE',
-});
-
-console.log("Cloudinary Config Loaded:", cloudinary.config());
 
 // Path to the Excel file
 const filePath = './recipients.xlsx';
-
-// Cloudinary Public ID of the image
-const cloudinaryPublicId = 'bestfriend_aamfqh';
 
 // Load recipients from Excel
 function loadRecipientsFromExcel(filePath) {
@@ -37,12 +24,9 @@ function loadRecipientsFromExcel(filePath) {
 }
 
 // Main broadcast function
-async function sendBroadcast(templateName, cloudinaryId, recipientNumbers) {
+async function sendBroadcast(templateName, recipientNumbers) {
   const url = WHATSAPP_API_URL;
   const token = WHATSAPP_API_TOKEN;
-
-  // Cloudinary URL for the image based on the public ID
-  const imageUrl = cloudinary.url(cloudinaryId);
 
   for (const recipient of recipientNumbers) {
     try {
@@ -54,18 +38,7 @@ async function sendBroadcast(templateName, cloudinaryId, recipientNumbers) {
           type: 'template',
           template: {
             name: templateName,
-            language: { code: 'ar' },
-            components: [
-              {
-                type: 'header',
-                parameters: [
-                  {
-                    type: 'image',
-                    image: { link: imageUrl }
-                  }
-                ]
-              }
-            ]
+            language: { code: 'ar' }
           }
         },
         {
@@ -92,7 +65,7 @@ async function sendBroadcast(templateName, cloudinaryId, recipientNumbers) {
     }
 
     console.log(`Sending messages to ${recipients.length} recipients...`);
-    await sendBroadcast('gift1', cloudinaryPublicId, recipients);
+    await sendBroadcast('promo', recipients);
     console.log('Broadcast complete.');
   } catch (error) {
     console.error('Error during broadcast process:', error.message);
