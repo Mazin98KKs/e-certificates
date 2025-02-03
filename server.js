@@ -7,7 +7,7 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs'); // For Excel logging
-const { parsePhoneNumberFromString } = require('libphonenumber-js'); // For international phone validation
+const { parsePhoneNumberFromString } = require('libphonenumber-js'); // For phone validation
 
 const app = express();
 
@@ -17,7 +17,6 @@ console.log("Cloudinary Config Loaded:", cloudinary.config());
 
 // Middleware for parsing JSON bodies for WhatsApp messages
 app.use('/webhook', bodyParser.json());
-
 // Middleware for parsing raw body for Stripe webhooks
 app.use('/stripe-webhook', bodyParser.raw({ type: 'application/json' }));
 
@@ -37,7 +36,7 @@ setInterval(() => {
 // Session timeout configuration (5 minutes)
 const sessionTimeoutMs = 5 * 60 * 1000;
 
-// Periodically clean up expired sessions
+// Periodically clean up expired sessions (every 30 seconds)
 setInterval(() => {
   const now = Date.now();
   for (const userId in userSessions) {
@@ -80,21 +79,17 @@ const certificateToPriceMap = {
 
 /**
  * Validates and formats an international phone number.
- * It accepts a number with country code (digits only) or with extra characters,
+ * It accepts a number with country code (digits only) or extra characters,
  * and returns the number in E.164 format without the leading plus sign.
  *
- * @param {string} input - The phone number input from the user.
- * @returns {string|null} - The formatted phone number (e.g., "96890000000") or null if invalid.
+ * @param {string} input - The phone number input.
+ * @returns {string|null} - Formatted phone number (e.g., "96890000000") or null.
  */
 function validateAndFormatInternationalPhoneNumber(input) {
-  // Remove all non-digit characters.
   let cleaned = input.replace(/\D/g, '');
-  // Prepend a plus sign so the library can recognize it as an international number.
   const phoneToParse = '+' + cleaned;
   const phoneNumber = parsePhoneNumberFromString(phoneToParse);
-
   if (phoneNumber && phoneNumber.isValid()) {
-    // Format in E.164 (e.g., "+96890000000") then remove the plus sign.
     const formatted = phoneNumber.format('E.164');
     return formatted.substring(1);
   }
@@ -102,26 +97,27 @@ function validateAndFormatInternationalPhoneNumber(input) {
 }
 
 /**
- * Log certificate details in an Excel file.
- * Each time a certificate is sent, a new row is appended to
- * an Excel file called "sent_certificates.xlsx" in the same directory.
+ * Logs certificate details to an Excel file.
+ * Appends a new row with [Timestamp, Sender Number, Recipient Name, Recipient Number]
+ * to "sent_certificates.xlsx" in the same directory.
+ *
+ * @param {string} senderNumber
+ * @param {string} recipientName
+ * @param {string} recipientNumber
  */
 async function logCertificateDetails(senderNumber, recipientName, recipientNumber) {
   const filePath = path.join(__dirname, 'sent_certificates.xlsx');
   const workbook = new ExcelJS.Workbook();
   let worksheet;
 
-  // Check if the file exists
   if (fs.existsSync(filePath)) {
     await workbook.xlsx.readFile(filePath);
     worksheet = workbook.getWorksheet("sent certificates");
     if (!worksheet) {
       worksheet = workbook.addWorksheet("sent certificates");
-      // Add header row if not present
       worksheet.addRow(["Timestamp", "Sender Number", "Recipient Name", "Recipient Number"]);
     }
   } else {
-    // Create new workbook and worksheet with header row
     worksheet = workbook.addWorksheet("sent certificates");
     worksheet.addRow(["Timestamp", "Sender Number", "Recipient Name", "Recipient Number"]);
   }
@@ -133,7 +129,7 @@ async function logCertificateDetails(senderNumber, recipientName, recipientNumbe
 }
 
 /**
- * Webhook Verification Endpoint
+ * Webhook Verification Endpoint.
  */
 app.get('/webhook', (req, res) => {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'mysecrettoken';
@@ -156,20 +152,17 @@ app.get('/webhook', (req, res) => {
 });
 
 /**
- * Webhook for Incoming WhatsApp Messages
+ * Webhook for Incoming WhatsApp Messages.
  */
 app.post('/webhook', async (req, res) => {
   try {
     if (req.body.object === 'whatsapp_business_account') {
       const entry = req.body.entry && req.body.entry[0];
       if (entry && entry.changes) {
-        const changes = entry.changes;
-        for (const change of changes) {
+        for (const change of entry.changes) {
           const value = change.value;
           if (!value.messages) continue;
-
-          const messages = value.messages;
-          for (const message of messages) {
+          for (const message of value.messages) {
             const from = message.from;
             const text = message.text?.body || '';
             console.log(`Incoming message from ${from}: ${text}`);
@@ -189,7 +182,7 @@ app.post('/webhook', async (req, res) => {
         }
       }
     }
-    res.sendStatus(200); // Acknowledge receipt
+    res.sendStatus(200);
   } catch (error) {
     console.error('Error processing incoming WhatsApp message:', error.message);
     res.sendStatus(500);
@@ -197,18 +190,13 @@ app.post('/webhook', async (req, res) => {
 });
 
 /**
- * Handle the conversation logic.
- *
- * Global commands:
- *   - "مرحبا": Starts/resets the conversation (welcome template is sent)
- *   - "وقف": Ends the session immediately
- * If no session exists and the command is not recognized, prompt the user.
+ * Handles conversation logic based on user session state.
  */
 async function handleUserMessage(from, message) {
   const choiceRaw = message.interactive?.button_reply?.id || message.text?.body;
   const choice = choiceRaw ? choiceRaw.trim() : '';
 
-  // Global command: start/restart the conversation
+  // Global command: start/restart conversation
   if (choice === "مرحبا") {
     userSessions[from] = { step: 'welcome', certificatesSent: 0, lastActivity: Date.now() };
     await sendWelcomeTemplate(from);
@@ -216,22 +204,19 @@ async function handleUserMessage(from, message) {
     return;
   }
 
-  // Global command: stop/end the conversation
+  // Global command: stop conversation
   if (choice === "وقف") {
-    if (userSessions[from]) {
-      delete userSessions[from];
-    }
+    if (userSessions[from]) delete userSessions[from];
     await sendWhatsAppText(from, "تم إنهاء الجلسة. شكراً.");
     return;
   }
 
-  // If no active session exists, prompt the user to choose either "مرحبا" or "وقف"
+  // If no active session exists, prompt the user
   if (!userSessions[from]) {
     await sendWhatsAppText(from, "يرجى اختيار إما 'مرحبا' لبدء الجلسة أو 'وقف' لإنهائها.");
     return;
   }
 
-  // Update the session's last activity time
   const session = userSessions[from];
   session.lastActivity = Date.now();
 
@@ -279,7 +264,7 @@ async function handleUserMessage(from, message) {
     case 'confirm_send': {
       if (/^نعم$/i.test(choice)) {
         if (FREE_CERTIFICATES.includes(session.selectedCertificate)) {
-          // For free certificates, send the certificate image immediately
+          // For free certificates, send certificate image immediately
           await sendCertificateImage(from, session.recipientNumber, session.selectedCertificate, session.recipientName);
           session.certificatesSent++;
           await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
@@ -303,7 +288,7 @@ async function handleUserMessage(from, message) {
       } else if (/^لا$/i.test(choice)) {
         await sendWhatsAppText(from, "تم إنهاء المحادثة. شكراً.");
         delete userSessions[from];
-        return; // Exit so that the session isn't updated further.
+        return;
       } else {
         await sendWhatsAppText(from, "يرجى الرد بـ (نعم/لا).");
       }
@@ -334,14 +319,14 @@ async function handleUserMessage(from, message) {
       break;
   }
 
-  // Update the session if it still exists
+  // Update session if it still exists
   if (userSessions[from]) {
     userSessions[from] = session;
   }
 }
 
 /**
- * Send a welcome template via WhatsApp.
+ * Sends a welcome template via WhatsApp.
  */
 async function sendWelcomeTemplate(to) {
   try {
@@ -353,14 +338,14 @@ async function sendWelcomeTemplate(to) {
         type: 'template',
         template: {
           name: 'wel_sel',
-          language: { code: 'ar' },
-        },
+          language: { code: 'ar' }
+        }
       },
       {
         headers: {
           Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
+          'Content-Type': 'application/json'
+        }
       }
     );
     console.log(`Template 'welcome' sent to ${to}`);
@@ -370,12 +355,12 @@ async function sendWelcomeTemplate(to) {
 }
 
 /**
- * Send the certificate image.
+ * Sends the certificate image via WhatsApp and logs the certificate details.
  * Accepts the sender's number for logging purposes.
  */
 async function sendCertificateImage(sender, recipient, certificateId, recipientName) {
   console.log(`Generating certificate image for Certificate ID: ${certificateId}, Recipient Name: ${recipientName}`);
-  await logCertificateDetails(sender, recipientName, recipient); // Log details before sending
+  await logCertificateDetails(sender, recipientName, recipient);
 
   if (!certificateId || !CERTIFICATE_PUBLIC_IDS[certificateId]) {
     console.error(`Invalid certificate ID: ${certificateId}`);
@@ -389,12 +374,12 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
         overlay: {
           font_family: "Arial",
           font_size: 80,
-          text: recipientName,
+          text: recipientName
         },
         gravity: "center",
-        y: -30,
-      },
-    ],
+        y: -30
+      }
+    ]
   });
 
   try {
@@ -413,26 +398,24 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
               parameters: [
                 {
                   type: 'image',
-                  image: {
-                    link: certificateImageUrl,
-                  },
-                },
-              ],
+                  image: { link: certificateImageUrl }
+                }
+              ]
             },
             {
               type: 'body',
               parameters: [
-                { type: 'text', text: recipientName },
-              ],
-            },
-          ],
-        },
+                { type: 'text', text: recipientName }
+              ]
+            }
+          ]
+        }
       },
       {
         headers: {
           Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
+          'Content-Type': 'application/json'
+        }
       }
     );
     console.log(`Template 'gift' sent to ${recipient} with recipient name: ${recipientName}`);
@@ -442,7 +425,7 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
 }
 
 /**
- * Create a Stripe checkout session for paid certificates.
+ * Creates a Stripe checkout session for paid certificates.
  */
 async function createStripeCheckoutSession(certificateId, senderNumber, recipientNumber, recipientName) {
   const priceId = certificateToPriceMap[certificateId];
@@ -460,13 +443,12 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
         senderNumber,
         recipientNumber,
         certificateId,
-        recipientName,
+        recipientName
       },
       success_url: `https://e-certificates.onrender.com/success.html`,
       cancel_url: `https://e-certificates.onrender.com/cancel.html`,
-      billing_address_collection: 'none',
+      billing_address_collection: 'none'
     });
-
     console.log(`Stripe checkout session created: ${session.id}`);
     return session.url;
   } catch (error) {
@@ -480,28 +462,25 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
  */
 app.post('/stripe-webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
-
-  console.log("Received signature:", sig);
-  console.log("Using webhook secret:", process.env.STRIPE_WEBHOOK_SECRET);
+  console.log(`Received signature: ${sig}`);
+  console.log(`Using webhook secret: ${process.env.STRIPE_WEBHOOK_SECRET}`);
 
   let event;
   try {
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
-    console.error("Signature verification error:", err.message);
-    console.error("Raw request body:", req.body.toString('utf8'));
+    console.error(`Signature verification error: ${err.message}`);
+    console.error(`Raw request body: ${req.body.toString('utf8')}`);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const { senderNumber, recipientNumber, certificateId, recipientName } = session.metadata;
-
     if (!senderNumber || !recipientNumber || !certificateId || !recipientName) {
       console.error("Missing metadata fields in checkout.session.completed event.");
       return res.sendStatus(400);
     }
-
     console.log(`Payment completed! Sender: ${senderNumber}, Recipient: ${recipientNumber}, Certificate ID: ${certificateId}, Name: ${recipientName}`);
 
     const certificateImageUrl = cloudinary.url(
@@ -512,12 +491,12 @@ app.post('/stripe-webhook', async (req, res) => {
             overlay: {
               font_family: "Arial",
               font_size: 80,
-              text: recipientName,
+              text: recipientName
             },
             gravity: "center",
-            y: -30,
-          },
-        ],
+            y: -30
+          }
+        ]
       }
     );
 
@@ -535,23 +514,23 @@ app.post('/stripe-webhook', async (req, res) => {
               {
                 type: 'header',
                 parameters: [
-                  { type: 'image', image: { link: certificateImageUrl } },
-                ],
+                  { type: 'image', image: { link: certificateImageUrl } }
+                ]
               },
               {
                 type: 'body',
                 parameters: [
-                  { type: 'text', text: recipientName },
-                ],
-              },
-            ],
-          },
+                  { type: 'text', text: recipientName }
+                ]
+              }
+            ]
+          }
         },
         {
           headers: {
             Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
-            'Content-Type': 'application/json',
-          },
+            'Content-Type': 'application/json'
+          }
         }
       );
       console.log(`Certificate sent to ${recipientNumber}`);
@@ -566,13 +545,13 @@ app.post('/stripe-webhook', async (req, res) => {
           messaging_product: 'whatsapp',
           to: senderNumber,
           type: 'text',
-          text: { body: `شكراً للدفع! الشهادة تم إرسالها بنجاح إلى ${recipientName}.` },
+          text: { body: `شكراً للدفع! الشهادة تم إرسالها بنجاح إلى ${recipientName}.` }
         },
         {
           headers: {
             Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
-            'Content-Type': 'application/json',
-          },
+            'Content-Type': 'application/json'
+          }
         }
       );
       console.log(`Payment confirmation sent to ${senderNumber}`);
@@ -592,7 +571,7 @@ app.post('/stripe-webhook', async (req, res) => {
 });
 
 /**
- * Send a simple WhatsApp text message.
+ * Sends a simple WhatsApp text message.
  */
 async function sendWhatsAppText(to, message) {
   try {
@@ -602,20 +581,20 @@ async function sendWhatsAppText(to, message) {
         messaging_product: 'whatsapp',
         to,
         type: 'text',
-        text: { body: message },
+        text: { body: message }
       },
       {
         headers: {
           Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
+          'Content-Type': 'application/json'
+        }
       }
     );
     console.log(`Sent text to ${to}: ${message}`);
   } catch (error) {
     console.error('Error sending WhatsApp text:', error.response?.data || error.message);
   }
-});
+}
 
 // Endpoint for monitoring initiated conversations
 app.get('/status', (req, res) => {
