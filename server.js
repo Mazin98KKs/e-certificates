@@ -447,7 +447,7 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
       },
       success_url: `https://e-certificates.onrender.com/success.html`,
       cancel_url: `https://e-certificates.onrender.com/cancel.html`,
-      billing_address_collection: 'none'
+      billing_address_collection: 'auto'
     });
     console.log(`Stripe checkout session created: ${session.id}`);
     return session.url;
