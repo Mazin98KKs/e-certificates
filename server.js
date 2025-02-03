@@ -15,6 +15,23 @@ const app = express();
 cloudinary.config(process.env.CLOUDINARY_URL);
 console.log("Cloudinary Config Loaded:", cloudinary.config());
 
+// Store short checkout URLs in memory
+const checkoutLinks = {};
+
+/**
+ * Redirects users to their unique Stripe checkout session.
+ */
+app.get('/checkout/:shortId', (req, res) => {
+  const shortId = req.params.shortId;
+  const fullStripeUrl = checkoutLinks[shortId];
+
+  if (fullStripeUrl) {
+    res.redirect(302, fullStripeUrl);
+  } else {
+    res.status(404).send('Invalid or expired checkout link.');
+  }
+});
+
 // Middleware for parsing JSON bodies for WhatsApp messages
 app.use('/webhook', bodyParser.json());
 // Middleware for parsing raw body for Stripe webhooks
@@ -449,8 +466,15 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
       cancel_url: `https://e-certificates.onrender.com/cancel.html`,
       billing_address_collection: 'auto'
     });
+
+
     console.log(`Stripe checkout session created: ${session.id}`);
-    return session.url;
+
+
+    const shortId = senderNumber; // Uses sender's phone number as the unique ID
+    checkoutLinks[shortId] = session.url;
+
+    return `https://e-certificates.onrender.com/checkout/${shortId}`;
   } catch (error) {
     console.error('Error creating Stripe checkout session:', error.message);
     return null;
@@ -600,6 +624,7 @@ async function sendWhatsAppText(to, message) {
 app.get('/status', (req, res) => {
   res.json({ initiatedConversations: initiatedCount });
 });
+
 
 // Start the server
 const PORT = process.env.PORT || 3000;
