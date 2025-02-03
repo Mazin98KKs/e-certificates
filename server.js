@@ -207,13 +207,13 @@ async function handleUserMessage(from, message) {
   // Global command: stop conversation
   if (choice === "وقف") {
     if (userSessions[from]) delete userSessions[from];
-    await sendWhatsAppText(from, "تم إنهاء الجلسة. شكراً.");
+    await sendWhatsAppText(from, "تم إنهاء الخدمة. شكراً.");
     return;
   }
 
   // If no active session exists, prompt the user
   if (!userSessions[from]) {
-    await sendWhatsAppText(from, "يرجى اختيار إما 'مرحبا' لبدء الجلسة أو 'وقف' لإنهائها.");
+    await sendWhatsAppText(from, "يرجى اختيار إما 'مرحبا' لبدء الخدمة أو 'وقف' لإنهائها.");
     return;
   }
 
@@ -314,7 +314,7 @@ async function handleUserMessage(from, message) {
     }
 
     default:
-      await sendWhatsAppText(from, "حدث خطأ. أرسل 'مرحبا' أو 'وقف' لتجربة جديدة.");
+      await sendWhatsAppText(from, "حدث خطأ. أرسل 'مرحبا' أو 'وقف' لإنهائها.");
       userSessions[from] = { step: 'welcome', certificatesSent: 0, lastActivity: Date.now() };
       break;
   }
