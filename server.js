@@ -198,6 +198,11 @@ app.post('/webhook', async (req, res) => {
 
 /**
  * Handle the conversation logic.
+ *
+ * Global commands:
+ *   - "مرحبا": Starts/resets the conversation (welcome template is sent)
+ *   - "وقف": Ends the session immediately
+ * If no session exists and the command is not recognized, prompt the user.
  */
 async function handleUserMessage(from, message) {
   const choiceRaw = message.interactive?.button_reply?.id || message.text?.body;
@@ -530,10 +535,7 @@ app.post('/stripe-webhook', async (req, res) => {
               {
                 type: 'header',
                 parameters: [
-                  {
-                    type: 'image',
-                    image: { link: certificateImageUrl },
-                  },
+                  { type: 'image', image: { link: certificateImageUrl } },
                 ],
               },
               {
