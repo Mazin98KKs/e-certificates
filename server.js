@@ -123,7 +123,7 @@ function validateAndFormatInternationalPhoneNumber(input) {
  * @param {string} recipientNumber
  */
 async function logCertificateDetails(senderNumber, recipientName, recipientNumber) {
-  const filePath = path.join(__dirname, 'sent_certificates.xlsx');
+  const filePath = path.join('/data', 'sent_certificates.xlsx');
   const workbook = new ExcelJS.Workbook();
   let worksheet;
 
