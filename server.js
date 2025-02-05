@@ -273,7 +273,7 @@ async function handleUserMessage(from, message) {
         session.step = 'confirm_send';
         await sendWhatsAppText(from, `سيتم إرسال الشهادة إلى ${session.recipientName} على الرقم: ${formattedNumber}. هل تريد إرسالها الآن؟ (نعم/لا)`);
       } else {
-        await sendWhatsAppText(from, "يرجى إدخال رقم صحيح يشمل رمز الدولة. مثال: 96890000000");
+        await sendWhatsAppText(from, "يرجى إدخال رقم صحيح يشمل رمز الدولة. مثال: 966500000000");
       }
       break;
     }
