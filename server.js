@@ -259,7 +259,7 @@ async function handleUserMessage(from, message) {
       if (choice) {
         session.recipientName = choice;
         session.step = 'ask_recipient_number';
-        await sendWhatsAppText(from, "ادخل رقم واتساب المستلم مع رمز الدولة. مثال: \nلعمان: 96890000000\nللسعودية: 966500000000");
+        await sendWhatsAppText(from, "ادخل رقم واتساب المستلم مع رمز الدولة. مثال: \nللسعودية: 966500000000\nلعمان: 96890000000");
       } else {
         await sendWhatsAppText(from, "يرجى إدخال اسم صحيح.");
       }
@@ -407,7 +407,7 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
         to: recipient,
         type: 'template',
         template: {
-          name: 'gift3',
+          name: 'gift4',
           language: { code: 'ar' },
           components: [
             {
@@ -532,7 +532,7 @@ app.post('/stripe-webhook', async (req, res) => {
           to: recipientNumber,
           type: 'template',
           template: {
-            name: 'gift3',
+            name: 'gift4',
             language: { code: 'ar' },
             components: [
               {

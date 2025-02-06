@@ -65,7 +65,7 @@ async function sendBroadcast(templateName, recipientNumbers) {
     }
 
     console.log(`Sending messages to ${recipients.length} recipients...`);
-    await sendBroadcast('promo', recipients);
+    await sendBroadcast('promo2', recipients);
     console.log('Broadcast complete.');
   } catch (error) {
     console.error('Error during broadcast process:', error.message);
