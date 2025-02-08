@@ -407,7 +407,7 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
         to: recipient,
         type: 'template',
         template: {
-          name: 'gift4',
+          name: 'gift6',
           language: { code: 'ar' },
           components: [
             {
@@ -532,7 +532,7 @@ app.post('/stripe-webhook', async (req, res) => {
           to: recipientNumber,
           type: 'template',
           template: {
-            name: 'gift4',
+            name: 'gift6',
             language: { code: 'ar' },
             components: [
               {
