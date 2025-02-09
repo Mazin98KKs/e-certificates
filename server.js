@@ -625,6 +625,22 @@ app.get('/status', (req, res) => {
   res.json({ initiatedConversations: initiatedCount });
 });
 
+/ Route to download the sent certificates Excel file
+app.get('/download-certificates', (req, res) => {
+  const filePath = '/data/sent_certificates.xlsx'; // File location in Render's persistent disk
+
+  // Check if file exists before sending
+  if (fs.existsSync(filePath)) {
+    res.download(filePath, 'sent_certificates.xlsx', (err) => {
+      if (err) {
+        console.error('Error downloading the file:', err);
+        res.status(500).send('Error downloading the file');
+      }
+    });
+  } else {
+    res.status(404).send('File not found');
+  }
+});
 
 // Start the server
 const PORT = process.env.PORT || 3000;
