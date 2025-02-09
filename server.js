@@ -625,7 +625,7 @@ app.get('/status', (req, res) => {
   res.json({ initiatedConversations: initiatedCount });
 });
 
-/ Route to download the sent certificates Excel file
+// Route to download the sent certificates Excel file
 app.get('/download-certificates', (req, res) => {
   const filePath = '/data/sent_certificates.xlsx'; // File location in Render's persistent disk
 
