@@ -3,7 +3,6 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs'); // For Excel logging
@@ -19,23 +18,25 @@ console.log("Cloudinary Config Loaded:", cloudinary.config());
 const checkoutLinks = {};
 
 /**
- * Redirects users to their unique Stripe checkout session.
+ * Redirects users to their unique checkout session.
  */
 app.get('/checkout/:shortId', (req, res) => {
   const shortId = req.params.shortId;
-  const fullStripeUrl = checkoutLinks[shortId];
+  const thawaniUrl = checkoutLinks[shortId];
 
-  if (fullStripeUrl) {
-    res.redirect(302, fullStripeUrl);
+  if (thawaniUrl) {
+    res.redirect(302, thawaniUrl);
   } else {
     res.status(404).send('Invalid or expired checkout link.');
   }
 });
 
+
 // Middleware for parsing JSON bodies for WhatsApp messages
 app.use('/webhook', bodyParser.json());
 // Middleware for parsing raw body for Stripe webhooks
-app.use('/stripe-webhook', bodyParser.raw({ type: 'application/json' }));
+app.use('/thawani-webhook', bodyParser.json());
+
 
 // In-memory user sessions
 const userSessions = {};
@@ -72,8 +73,8 @@ const CERTIFICATE_PUBLIC_IDS = {
   3: "kfoo_ncybxx",
   4: "lazy_vndi9i",
   5: "Mokaf7_wdocgh",
-  6: "donothing_nvdhcx",
-  7: "knoweverything_vppbsa",
+  6: "coffeeadditcted_hdqlch",
+  7: "complaining_rprhsl",
   8: "friendly_e7szzo",
   9: "kingnegative_ak81hp",
   10: "lier_hyuisy",
@@ -407,7 +408,7 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
         to: recipient,
         type: 'template',
         template: {
-          name: 'gift6',
+          name: 'gift1',
           language: { code: 'ar' },
           components: [
             {
@@ -442,157 +443,105 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
 }
 
 /**
- * Creates a Stripe checkout session for paid certificates.
+ * Creates a Thawani checkout session for paid certificates.
  */
-async function createStripeCheckoutSession(certificateId, senderNumber, recipientNumber, recipientName) {
-  const priceId = certificateToPriceMap[certificateId];
-  if (!priceId) {
-    console.error(`No Stripe price ID found for certificate ${certificateId}`);
-    return null;
-  }
+async function createThawaniSession(certificateId, senderNumber, recipientNumber, recipientName) {
+  const THAWANI_API_KEY = process.env.THAWANI_API_KEY;
+  const THAWANI_PUBLISHABLE_KEY = process.env.THAWANI_PUBLISHABLE_KEY;
+  const THAWANI_API_URL = "https://uatcheckout.thawani.om/api/v1/checkout/session";
+
+  const productName = `Certificate #${certificateId}`;
+  const productPrice = 1000; // Replace with actual certificate price in Baisa
 
   try {
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      line_items: [{ price: priceId, quantity: 1 }],
-      mode: 'payment',
-      metadata: {
-        senderNumber,
-        recipientNumber,
-        certificateId,
-        recipientName
+    const response = await axios.post(
+      THAWANI_API_URL,
+      {
+        client_reference_id: senderNumber,
+        mode: "payment",
+        products: [
+          {
+            name: productName,
+            quantity: 1,
+            unit_amount: productPrice,
+          },
+        ],
+        success_url: `https://e-certificates.onrender.com/success.html`,
+        cancel_url: `https://e-certificates.onrender.com/cancel.html`,
+        metadata: {
+          senderNumber,
+          recipientNumber,
+          certificateId,
+          recipientName,
+        },
       },
-      success_url: `https://e-certificates.onrender.com/success.html`,
-      cancel_url: `https://e-certificates.onrender.com/cancel.html`,
-      billing_address_collection: 'auto'
-    });
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "thawani-api-key": THAWANI_API_KEY,
+        },
+      }
+    );
 
-
-    console.log(`Stripe checkout session created: ${session.id}`);
-
-
-    const shortId = senderNumber; // Uses sender's phone number as the unique ID
-    checkoutLinks[shortId] = session.url;
-
-    return `https://e-certificates.onrender.com/checkout/${shortId}`;
+    if (response.data.success) {
+      const sessionId = response.data.data.session_id;
+      const paymentUrl = `https://uatcheckout.thawani.om/pay/${sessionId}?key=${THAWANI_PUBLISHABLE_KEY}`;
+      checkoutLinks[senderNumber] = paymentUrl;
+      return `https://e-certificates.onrender.com/checkout/${senderNumber}`;
+    } else {
+      console.error("Thawani session creation failed:", response.data);
+      return null;
+    }
   } catch (error) {
-    console.error('Error creating Stripe checkout session:', error.message);
+    console.error("Error creating Thawani checkout session:", error.message);
     return null;
   }
 }
 
 /**
- * Stripe Webhook Endpoint.
+ * Webhook for Thawani Payment Confirmation.
  */
-app.post('/stripe-webhook', async (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  console.log(`Received signature: ${sig}`);
-  console.log(`Using webhook secret: ${process.env.STRIPE_WEBHOOK_SECRET}`);
-
-  let event;
+/**
+ * Webhook for Thawani Payment Confirmation.
+ */
+app.post('/thawani-webhook', async (req, res) => {
   try {
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-  } catch (err) {
-    console.error(`Signature verification error: ${err.message}`);
-    console.error(`Raw request body: ${req.body.toString('utf8')}`);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
+    const webhookData = req.body;
+    console.log("Received Thawani Webhook Data:", webhookData);
 
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object;
-    const { senderNumber, recipientNumber, certificateId, recipientName } = session.metadata;
-    if (!senderNumber || !recipientNumber || !certificateId || !recipientName) {
-      console.error("Missing metadata fields in checkout.session.completed event.");
-      return res.sendStatus(400);
-    }
-    console.log(`Payment completed! Sender: ${senderNumber}, Recipient: ${recipientNumber}, Certificate ID: ${certificateId}, Name: ${recipientName}`);
+    if (webhookData.data?.payment_status === "paid") {
+      const { senderNumber, recipientNumber, certificateId, recipientName } = webhookData.data.metadata;
 
-    const certificateImageUrl = cloudinary.url(
-      CERTIFICATE_PUBLIC_IDS[certificateId],
-      {
-        transformation: [
-          {
-            overlay: {
-              font_family: "Arial",
-              font_size: 80,
-              text: recipientName
-            },
-            gravity: "center",
-            y: -30
-          }
-        ]
+      if (senderNumber && recipientNumber && certificateId && recipientName) {
+        await sendCertificateImage(senderNumber, recipientNumber, certificateId, recipientName);
+        await sendWhatsAppText(senderNumber, `شكراً للدفع! الشهادة تم إرسالها بنجاح إلى ${recipientName}.`);
+
+        console.log(`Payment completed successfully:
+          Sender: ${senderNumber},
+          Recipient: ${recipientNumber},
+          Certificate ID: ${certificateId},
+          Recipient Name: ${recipientName}`);
+
+        if (userSessions[senderNumber]) {
+          delete userSessions[senderNumber];
+          console.log(`Session terminated for sender ${senderNumber}`);
+        }
+
+        res.sendStatus(200);
+      } else {
+        console.error("Metadata incomplete:", webhookData.data.metadata);
+        res.status(400).send("Incomplete metadata received");
       }
-    );
-
-    try {
-      await axios.post(
-        process.env.WHATSAPP_API_URL,
-        {
-          messaging_product: 'whatsapp',
-          to: recipientNumber,
-          type: 'template',
-          template: {
-            name: 'gift6',
-            language: { code: 'ar' },
-            components: [
-              {
-                type: 'header',
-                parameters: [
-                  { type: 'image', image: { link: certificateImageUrl } }
-                ]
-              },
-              {
-                type: 'body',
-                parameters: [
-                  { type: 'text', text: recipientName }
-                ]
-              }
-            ]
-          }
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-      console.log(`Certificate sent to ${recipientNumber}`);
-    } catch (error) {
-      console.error(`Failed to send certificate to ${recipientNumber}:`, error.response?.data || error.message);
+    } else {
+      console.log("Unhandled event or payment status:", webhookData.data?.payment_status);
+      res.status(400).send("Unhandled payment status");
     }
-
-    try {
-      await axios.post(
-        process.env.WHATSAPP_API_URL,
-        {
-          messaging_product: 'whatsapp',
-          to: senderNumber,
-          type: 'text',
-          text: { body: `شكراً للدفع! الشهادة تم إرسالها بنجاح إلى ${recipientName}.` }
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.WHATSAPP_API_TOKEN}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-      console.log(`Payment confirmation sent to ${senderNumber}`);
-    } catch (error) {
-      console.error(`Failed to send confirmation to ${senderNumber}:`, error.response?.data || error.message);
-    }
-
-    console.log(`Terminating session for ${senderNumber}`);
-    if (senderNumber) {
-      delete userSessions[senderNumber];
-    }
-  } else {
-    console.log(`Unhandled event type ${event.type}`);
+  } catch (error) {
+    console.error("Error handling Thawani Webhook:", error.message);
+    res.sendStatus(500);
   }
-
-  res.sendStatus(200);
 });
+;
 
 /**
  * Sends a simple WhatsApp text message.
