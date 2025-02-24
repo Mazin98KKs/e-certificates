@@ -416,7 +416,7 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
             {
               type: 'body',
               parameters: [
-                { type: 'text', text: recipientName }
+                { type: 'text', text: recipientName },
                 { type: 'text', text: recipientName }
               ]
             }
