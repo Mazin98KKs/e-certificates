@@ -31,12 +31,10 @@ app.get('/checkout/:shortId', (req, res) => {
   }
 });
 
-
 // Middleware for parsing JSON bodies for WhatsApp messages
 app.use('/webhook', bodyParser.json());
-// Middleware for parsing raw body for Stripe webhooks
+// Middleware for parsing raw body for Thawani webhooks
 app.use('/thawani-webhook', bodyParser.json());
-
 
 // In-memory user sessions
 const userSessions = {};
@@ -82,18 +80,6 @@ const CERTIFICATE_PUBLIC_IDS = {
 
 // Certificates 1 and 5 are free
 const FREE_CERTIFICATES = [1, 5];
-
-// Map of certificates to Stripe Price IDs
-const certificateToPriceMap = {
-  2: "price_1Qlw3YBH45p3WHSs6t7GT3cc",
-  3: "price_1QlwCPBH45p3WHSsOJPIV4ck",
-  4: "price_1QlwBMBH45p3WHSsLhUpZIiJ",
-  6: "price_1QlwBhBH45p3WHSshaMTmMgO",
-  7: "price_1QlwCjBH45p3WHSsIkSlJpNl",
-  8: "price_1QlwB3BH45p3WHSsO1DoVyn3",
-  9: "price_1QlwAGBH45p3WHSst46YVwME",
-  10: "price_1QlwAiBH45p3WHSsmU4G4EXn",
-};
 
 /**
  * Validates and formats an international phone number.
@@ -272,9 +258,15 @@ async function handleUserMessage(from, message) {
       if (formattedNumber) {
         session.recipientNumber = formattedNumber;
         session.step = 'confirm_send';
-        await sendWhatsAppText(from, `سيتم إرسال الشهادة إلى ${session.recipientName} على الرقم: ${formattedNumber}. هل تريد إرسالها الآن؟ (نعم/لا)`);
+        await sendWhatsAppText(
+          from,
+          `سيتم إرسال الشهادة إلى ${session.recipientName} على الرقم: ${formattedNumber}. هل تريد إرسالها الآن؟ (نعم/لا)`
+        );
       } else {
-        await sendWhatsAppText(from, "يرجى إدخال رقم صحيح يشمل رمز الدولة. مثال: 966500000000");
+        await sendWhatsAppText(
+          from,
+          "يرجى إدخال رقم صحيح يشمل رمز الدولة. مثال: 966500000000"
+        );
       }
       break;
     }
@@ -289,15 +281,16 @@ async function handleUserMessage(from, message) {
           session.step = 'ask_another';
           await sendWhatsAppText(from, "هل ترغب في إرسال شهادة أخرى؟ (نعم/لا)");
         } else {
-          const stripeSessionUrl = await createStripeCheckoutSession(
+          // Replace Stripe function call with Thawani session creation
+          const thawaniSessionUrl = await createThawaniSession(
             session.selectedCertificate,
             from,
             session.recipientNumber,
             session.recipientName
           );
-          if (stripeSessionUrl) {
+          if (thawaniSessionUrl) {
             session.paymentPending = true;
-            await sendWhatsAppText(from, `لإتمام العمليه يمكنك الدفع عن طريق نظام آبل من خلال الرابط الاتي:\n${stripeSessionUrl}`);
+            await sendWhatsAppText(from, `لإتمام العمليه يمكنك الدفع عن طريق الرابط الآتي:\n${thawaniSessionUrl}`);
             session.step = 'await_payment';
           } else {
             await sendWhatsAppText(from, "حدث خطأ في إنشاء جلسة الدفع. حاول مرة أخرى.");
@@ -451,7 +444,8 @@ async function createThawaniSession(certificateId, senderNumber, recipientNumber
   const THAWANI_API_URL = "https://uatcheckout.thawani.om/api/v1/checkout/session";
 
   const productName = `Certificate #${certificateId}`;
-  const productPrice = 1000; // Replace with actual certificate price in Baisa
+  // Adjust productPrice if needed. This is in Baisa (1 OMR = 1000 Baisa).
+  const productPrice = 1000; // Example price
 
   try {
     const response = await axios.post(
@@ -487,6 +481,7 @@ async function createThawaniSession(certificateId, senderNumber, recipientNumber
       const sessionId = response.data.data.session_id;
       const paymentUrl = `https://uatcheckout.thawani.om/pay/${sessionId}?key=${THAWANI_PUBLISHABLE_KEY}`;
       checkoutLinks[senderNumber] = paymentUrl;
+      // Return a shorter link that redirects to the real Thawani URL
       return `https://e-certificates.onrender.com/checkout/${senderNumber}`;
     } else {
       console.error("Thawani session creation failed:", response.data);
@@ -498,9 +493,6 @@ async function createThawaniSession(certificateId, senderNumber, recipientNumber
   }
 }
 
-/**
- * Webhook for Thawani Payment Confirmation.
- */
 /**
  * Webhook for Thawani Payment Confirmation.
  */
@@ -541,7 +533,6 @@ app.post('/thawani-webhook', async (req, res) => {
     res.sendStatus(500);
   }
 });
-;
 
 /**
  * Sends a simple WhatsApp text message.
