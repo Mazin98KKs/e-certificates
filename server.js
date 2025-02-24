@@ -488,7 +488,7 @@ async function createThawaniSession(certificateId, senderNumber, recipientNumber
     // Check for successful response
     if (response.data.success) {
       const sessionId = response.data.data.session_id;
-      const paymentUrl = `https://uatcheckout.thawani.om/pay/${sessionId}?key=${THAWANI_PUBLISHABLE_KEY}`;
+      const paymentUrl = `https://checkout.thawani.om/pay/${sessionId}?key=${THAWANI_PUBLISHABLE_KEY}`;
       checkoutLinks[senderNumber] = paymentUrl;
       return `https://e-certificates.onrender.com/checkout/${senderNumber}`;
     } else {
