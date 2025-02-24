@@ -417,6 +417,7 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
               type: 'body',
               parameters: [
                 { type: 'text', text: recipientName }
+                { type: 'text', text: recipientName }
               ]
             }
           ]
@@ -452,7 +453,7 @@ async function createThawaniSession(certificateId, senderNumber, recipientNumber
   const THAWANI_API_URL = "https://checkout.thawani.om/api/v1/checkout/session";
 
   const productName = `Certificate #${certificateId}`;
-  const productPrice = 1000; // Example price in Baisa (1 OMR = 1000 Baisa)
+  const productPrice = 400; // Example price in Baisa (1 OMR = 1000 Baisa)
 
   try {
     // Make the POST request to Thawani
