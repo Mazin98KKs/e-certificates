@@ -439,15 +439,23 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
  * Creates a Thawani checkout session for paid certificates.
  */
 async function createThawaniSession(certificateId, senderNumber, recipientNumber, recipientName) {
+  // Ensure that THAWANI_API_KEY and THAWANI_PUBLISHABLE_KEY are defined
   const THAWANI_API_KEY = process.env.THAWANI_API_KEY;
   const THAWANI_PUBLISHABLE_KEY = process.env.THAWANI_PUBLISHABLE_KEY;
+
+  // Log if the API key is undefined
+  if (!THAWANI_API_KEY) {
+    console.error("Thawani API key is not set in environment variables.");
+    return null;
+  }
+
   const THAWANI_API_URL = "https://uatcheckout.thawani.om/api/v1/checkout/session";
 
   const productName = `Certificate #${certificateId}`;
-  // Adjust productPrice if needed. This is in Baisa (1 OMR = 1000 Baisa).
-  const productPrice = 1000; // Example price
+  const productPrice = 1000; // Example price in Baisa (1 OMR = 1000 Baisa)
 
   try {
+    // Make the POST request to Thawani
     const response = await axios.post(
       THAWANI_API_URL,
       {
@@ -477,22 +485,22 @@ async function createThawaniSession(certificateId, senderNumber, recipientNumber
       }
     );
 
+    // Check for successful response
     if (response.data.success) {
       const sessionId = response.data.data.session_id;
       const paymentUrl = `https://uatcheckout.thawani.om/pay/${sessionId}?key=${THAWANI_PUBLISHABLE_KEY}`;
       checkoutLinks[senderNumber] = paymentUrl;
-      // Return a shorter link that redirects to the real Thawani URL
       return `https://e-certificates.onrender.com/checkout/${senderNumber}`;
     } else {
       console.error("Thawani session creation failed:", response.data);
       return null;
     }
   } catch (error) {
-    console.error("Error creating Thawani checkout session:", error.message);
+    // Improved error logging
+    console.error("Error creating Thawani checkout session:", error.response?.data || error.message);
     return null;
   }
 }
-
 /**
  * Webhook for Thawani Payment Confirmation.
  */
