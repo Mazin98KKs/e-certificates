@@ -449,7 +449,7 @@ async function createThawaniSession(certificateId, senderNumber, recipientNumber
     return null;
   }
 
-  const THAWANI_API_URL = "https://uatcheckout.thawani.om/api/v1/checkout/session";
+  const THAWANI_API_URL = "https://checkout.thawani.om/api/v1/checkout/session";
 
   const productName = `Certificate #${certificateId}`;
   const productPrice = 1000; // Example price in Baisa (1 OMR = 1000 Baisa)
