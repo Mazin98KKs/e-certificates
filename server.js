@@ -213,7 +213,7 @@ async function handleUserMessage(from, message) {
       if (choice) {
         session.recipientName = choice;
         session.step = 'ask_recipient_number';
-        await sendWhatsAppText(from, "ادخل رقم واتساب المستلم مع رمز الدولة. مثال: \nللسعودية: 966500000000\nلعمان: 96890000000");
+        await sendWhatsAppText(from, "ادخل رقم واتساب المستلم مع رمز الدولة. مثال: \nلعمان: 96890000000");
       } else {
         await sendWhatsAppText(from, "يرجى إدخال اسم صحيح.");
       }
@@ -224,9 +224,9 @@ async function handleUserMessage(from, message) {
       if (formattedNumber) {
         session.recipientNumber = formattedNumber;
         session.step = 'ask_custom_message';
-        await sendWhatsAppText(from, "يرجى إدخال رسالة مخصصة للشخص:");
+        await sendWhatsAppText(from, "أكتب الرسالة اللي ودك ترسلها له :");
       } else {
-        await sendWhatsAppText(from, "يرجى إدخال رقم صحيح يشمل رمز الدولة. مثال: 966500000000");
+        await sendWhatsAppText(from, "يرجى إدخال رقم صحيح يشمل رمز الدولة. مثال: 96890000000");
       }
       break;
     }
@@ -259,7 +259,7 @@ async function handleUserMessage(from, message) {
           );
           if (thawaniSessionUrl) {
             session.paymentPending = true;
-            await sendWhatsAppText(from, `لإتمام العمليه يمكنك الدفع عن طريق الرابط الآتي:\n${thawaniSessionUrl}`);
+            await sendWhatsAppText(from, `لإتمام العمليه يمكنك الدفع عن طريق آبل في منصة ثواني فالاسفل:\n${thawaniSessionUrl}`);
             session.step = 'await_payment';
           } else {
             await sendWhatsAppText(from, "حدث خطأ في إنشاء جلسة الدفع. حاول مرة أخرى.");
