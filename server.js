@@ -17,7 +17,9 @@ console.log("Cloudinary Config Loaded:", cloudinary.config());
 // Store short checkout URLs in memory
 const checkoutLinks = {};
 
-// Redirects users to their unique checkout session.
+/**
+ * Redirects users to their unique checkout session.
+ */
 app.get('/checkout/:shortId', (req, res) => {
   const shortId = req.params.shortId;
   const thawaniUrl = checkoutLinks[shortId];
@@ -164,12 +166,12 @@ app.post('/webhook', async (req, res) => {
 
 /**
  * Handles conversation logic.
- * Flow states: welcome → select_certificate → ask_recipient_name → ask_recipient_number → ask_custom_message → confirm_send → (await_payment or send immediately) → ask_another.
+ * Flow: welcome → select_certificate → ask_recipient_name → ask_recipient_number → ask_custom_message → confirm_send → (await_payment or send immediately) → ask_another.
  */
 async function handleUserMessage(from, message) {
   const choiceRaw = message.interactive?.button_reply?.id || message.text?.body;
   const choice = choiceRaw ? choiceRaw.trim() : '';
-
+  
   // Global commands
   if (choice === "مرحبا") {
     userSessions[from] = { step: 'welcome', certificatesSent: 0, lastActivity: Date.now() };
@@ -186,10 +188,10 @@ async function handleUserMessage(from, message) {
     await sendWhatsAppText(from, "يرجى اختيار إما 'مرحبا' لبدء الخدمة أو 'وقف' لإنهائها.");
     return;
   }
-
+  
   const session = userSessions[from];
   session.lastActivity = Date.now();
-
+  
   switch (session.step) {
     case 'welcome':
       await sendWelcomeTemplate(from);
@@ -240,20 +242,20 @@ async function handleUserMessage(from, message) {
     case 'confirm_send': {
       if (/^نعم$/i.test(choice)) {
         if (FREE_CERTIFICATES.includes(session.selectedCertificate)) {
-          // Free certificate: send certificate immediately
+          // Free certificate: send immediately
           await sendCertificateImage(from, session.recipientNumber, session.selectedCertificate, session.recipientName, session.customMessage);
           session.certificatesSent++;
           await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
           session.step = 'ask_another';
           await sendWhatsAppText(from, "هل ترغب في إرسال شهادة أخرى؟ (نعم/لا)");
         } else {
-          // Paid certificate: create a Thawani session with customMessage in metadata
+          // Paid certificate: create a Thawani session.
+          // Metadata will include only senderNumber, certificateId, recipientNumber, and recipientName.
           const thawaniSessionUrl = await createThawaniSession(
             session.selectedCertificate,
             from,
             session.recipientNumber,
-            session.recipientName,
-            session.customMessage
+            session.recipientName
           );
           if (thawaniSessionUrl) {
             session.paymentPending = true;
@@ -327,7 +329,7 @@ async function sendWelcomeTemplate(to) {
 
 /**
  * Sends the certificate image via WhatsApp and logs certificate details.
- * Now accepts an optional customMessage parameter.
+ * Accepts an optional customMessage parameter.
  */
 async function sendCertificateImage(sender, recipient, certificateId, recipientName, customMessage = "") {
   console.log(`Generating certificate image for Certificate ID: ${certificateId}, Recipient Name: ${recipientName}`);
@@ -371,7 +373,7 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
               type: 'body',
               parameters: [
                 { type: 'text', text: recipientName },
-                { type: 'text', text: customMessage }  // Second variable: custom message
+                { type: 'text', text: customMessage }
               ]
             }
           ]
@@ -392,9 +394,9 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
 
 /**
  * Creates a Thawani checkout session for paid certificates.
- * Now accepts an additional parameter customMessage.
+ * Only senderNumber, recipientNumber, certificateId, and recipientName are sent in metadata.
  */
-async function createThawaniSession(certificateId, senderNumber, recipientNumber, recipientName, customMessage = "") {
+async function createThawaniSession(certificateId, senderNumber, recipientNumber, recipientName) {
   const THAWANI_API_KEY = process.env.THAWANI_API_KEY;
   const THAWANI_PUBLISHABLE_KEY = process.env.THAWANI_PUBLISHABLE_KEY;
   if (!THAWANI_API_KEY) {
@@ -415,7 +417,8 @@ async function createThawaniSession(certificateId, senderNumber, recipientNumber
         ],
         success_url: `https://e-certificates.onrender.com/success.html`,
         cancel_url: `https://e-certificates.onrender.com/cancel.html`,
-        metadata: { senderNumber, recipientNumber, certificateId, recipientName, customMessage }
+        // Only include senderNumber, recipientNumber, certificateId, and recipientName
+        metadata: { senderNumber, recipientNumber, certificateId, recipientName }
       },
       {
         headers: {
@@ -441,19 +444,24 @@ async function createThawaniSession(certificateId, senderNumber, recipientNumber
 
 /**
  * Webhook for Thawani Payment Confirmation.
- * Handles both structures where payment_status and metadata may be at different levels.
+ * Supports both nested and top-level structures.
+ * Instead of relying solely on metadata for customMessage,
+ * we attempt to look up the session using senderNumber.
  */
 app.post('/thawani-webhook', async (req, res) => {
   try {
     const webhookData = req.body;
-    console.log("Received Thawani Webhook Data:", webhookData);
-
-    // Try to extract payment_status and metadata from two possible structures:
+    console.log("Received Thawani Webhook Data:", JSON.stringify(webhookData, null, 2));
+    // Support both structures:
     const paymentStatus = webhookData.data ? webhookData.data.payment_status : webhookData.payment_status;
     const metadata = webhookData.data ? webhookData.data.metadata : webhookData.metadata;
-
     if (paymentStatus === "paid") {
-      const { senderNumber, recipientNumber, certificateId, recipientName, customMessage } = metadata;
+      const { senderNumber, recipientNumber, certificateId, recipientName } = metadata;
+      // Attempt to retrieve customMessage from the in-memory session, if available.
+      let customMessage = "";
+      if (userSessions[senderNumber] && userSessions[senderNumber].customMessage) {
+        customMessage = userSessions[senderNumber].customMessage;
+      }
       if (senderNumber && recipientNumber && certificateId && recipientName) {
         console.log(`Payment completed! Sender: ${senderNumber}, Recipient: ${recipientNumber}, Certificate ID: ${certificateId}, Name: ${recipientName}, Message: ${customMessage}`);
         await sendCertificateImage(senderNumber, recipientNumber, certificateId, recipientName, customMessage);
