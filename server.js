@@ -310,7 +310,7 @@ async function sendWelcomeTemplate(to) {
         to,
         type: 'template',
         template: {
-          name: 'wel_sel',
+          name: 'wel_sele',
           language: { code: 'ar' }
         }
       },
