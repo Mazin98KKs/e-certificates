@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
+const crypto = require('crypto'); // For HMAC verification
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
 const path = require('path');
@@ -32,17 +33,22 @@ app.get('/checkout/:shortId', (req, res) => {
 
 // Middleware for parsing JSON bodies for WhatsApp messages
 app.use('/webhook', bodyParser.json());
-// Middleware for parsing JSON bodies for Thawani webhooks
-app.use('/thawani-webhook', bodyParser.json());
+
+// For Thawani webhooks, we need the raw body for signature verification
+app.use('/thawani-webhook', bodyParser.raw({ type: 'application/json' }));
 
 // In-memory user sessions and rate-limiting variables
 const userSessions = {};
 const initiatedConversations = new Set();
 let initiatedCount = 0;
+
+// Reset initiated count every 24 hours
 setInterval(() => {
   initiatedConversations.clear();
   initiatedCount = 0;
 }, 24 * 60 * 60 * 1000);
+
+// Session timeout configuration (5 minutes)
 const sessionTimeoutMs = 5 * 60 * 1000;
 setInterval(() => {
   const now = Date.now();
@@ -91,6 +97,7 @@ async function logCertificateDetails(senderNumber, recipientName, recipientNumbe
   const filePath = path.join('/data', 'sent_certificates.xlsx');
   const workbook = new ExcelJS.Workbook();
   let worksheet;
+
   if (fs.existsSync(filePath)) {
     await workbook.xlsx.readFile(filePath);
     worksheet = workbook.getWorksheet("sent certificates");
@@ -102,6 +109,7 @@ async function logCertificateDetails(senderNumber, recipientName, recipientNumbe
     worksheet = workbook.addWorksheet("sent certificates");
     worksheet.addRow(["Timestamp", "Sender Number", "Recipient Name", "Recipient Number"]);
   }
+
   const timestamp = new Date().toISOString();
   worksheet.addRow([timestamp, senderNumber, recipientName, recipientNumber]);
   await workbook.xlsx.writeFile(filePath);
@@ -109,14 +117,16 @@ async function logCertificateDetails(senderNumber, recipientName, recipientNumbe
 }
 
 /**
- * Webhook Verification Endpoint.
+ * Webhook Verification Endpoint (WhatsApp).
  */
 app.get('/webhook', (req, res) => {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'mysecrettoken';
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
+
   console.log(`Webhook verification request: mode=${mode}, token=${token}, challenge=${challenge}`);
+
   if (mode && token) {
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
       console.log('WEBHOOK_VERIFIED');
@@ -140,10 +150,13 @@ app.post('/webhook', async (req, res) => {
         for (const change of entry.changes) {
           const value = change.value;
           if (!value.messages) continue;
+
           for (const message of value.messages) {
             const from = message.from;
             const text = message.text?.body || '';
             console.log(`Incoming message from ${from}: ${text}`);
+
+            // Rate limit new sessions
             if (!initiatedConversations.has(from)) {
               if (initiatedCount >= 990) {
                 await sendWhatsAppText(from, "Sorry, we're busy now. Please try again later.");
@@ -152,6 +165,7 @@ app.post('/webhook', async (req, res) => {
               initiatedConversations.add(from);
               initiatedCount++;
             }
+
             await handleUserMessage(from, message);
           }
         }
@@ -166,12 +180,11 @@ app.post('/webhook', async (req, res) => {
 
 /**
  * Handles conversation logic.
- * Flow: welcome → select_certificate → ask_recipient_name → ask_recipient_number → ask_custom_message → confirm_send → (await_payment or send immediately) → ask_another.
  */
 async function handleUserMessage(from, message) {
   const choiceRaw = message.interactive?.button_reply?.id || message.text?.body;
   const choice = choiceRaw ? choiceRaw.trim() : '';
-  
+
   // Global commands
   if (choice === "مرحبا") {
     userSessions[from] = { step: 'welcome', certificatesSent: 0, lastActivity: Date.now() };
@@ -179,24 +192,27 @@ async function handleUserMessage(from, message) {
     userSessions[from].step = 'select_certificate';
     return;
   }
+
   if (choice === "وقف") {
     if (userSessions[from]) delete userSessions[from];
     await sendWhatsAppText(from, "تم إنهاء الخدمة. شكراً.");
     return;
   }
+
   if (!userSessions[from]) {
     await sendWhatsAppText(from, "يرجى اختيار إما 'مرحبا' لبدء الخدمة أو 'وقف' لإنهائها.");
     return;
   }
-  
+
   const session = userSessions[from];
   session.lastActivity = Date.now();
-  
+
   switch (session.step) {
     case 'welcome':
       await sendWelcomeTemplate(from);
       session.step = 'select_certificate';
       break;
+
     case 'select_certificate': {
       const certificateChoice = parseInt(choice, 10);
       if (certificateChoice && certificateChoice >= 1 && certificateChoice <= 10) {
@@ -208,6 +224,7 @@ async function handleUserMessage(from, message) {
       }
       break;
     }
+
     case 'ask_recipient_name': {
       if (choice) {
         session.recipientName = choice;
@@ -218,6 +235,7 @@ async function handleUserMessage(from, message) {
       }
       break;
     }
+
     case 'ask_recipient_number': {
       const formattedNumber = validateAndFormatInternationalPhoneNumber(choice);
       if (formattedNumber) {
@@ -229,28 +247,38 @@ async function handleUserMessage(from, message) {
       }
       break;
     }
+
     case 'ask_custom_message': {
       if (choice) {
         session.customMessage = choice;
         session.step = 'confirm_send';
-        await sendWhatsAppText(from, `سيتم إرسال الشهادة إلى ${session.recipientName} على الرقم: ${session.recipientNumber} برسالة: "${session.customMessage}". هل تريد إرسالها الآن؟ (نعم/لا)`);
+        await sendWhatsAppText(
+          from,
+          `سيتم إرسال الشهادة إلى ${session.recipientName} على الرقم: ${session.recipientNumber} برسالة: "${session.customMessage}". هل تريد إرسالها الآن؟ (نعم/لا)`
+        );
       } else {
         await sendWhatsAppText(from, "يرجى إدخال رسالة مخصصة صحيحة.");
       }
       break;
     }
+
     case 'confirm_send': {
       if (/^نعم$/i.test(choice)) {
         if (FREE_CERTIFICATES.includes(session.selectedCertificate)) {
-          // Free certificate: send immediately
-          await sendCertificateImage(from, session.recipientNumber, session.selectedCertificate, session.recipientName, session.customMessage);
+          // Free certificate flow
+          await sendCertificateImage(
+            from,
+            session.recipientNumber,
+            session.selectedCertificate,
+            session.recipientName,
+            session.customMessage
+          );
           session.certificatesSent++;
           await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
           session.step = 'ask_another';
           await sendWhatsAppText(from, "هل ترغب في إرسال شهادة أخرى؟ (نعم/لا)");
         } else {
-          // Paid certificate: create a Thawani session.
-          // Metadata will include only senderNumber, certificateId, recipientNumber, and recipientName.
+          // Paid certificate: create a Thawani session
           const thawaniSessionUrl = await createThawaniSession(
             session.selectedCertificate,
             from,
@@ -268,15 +296,16 @@ async function handleUserMessage(from, message) {
       } else if (/^لا$/i.test(choice)) {
         await sendWhatsAppText(from, "تم إنهاء المحادثة. شكراً.");
         delete userSessions[from];
-        return;
       } else {
         await sendWhatsAppText(from, "يرجى الرد بـ (نعم/لا).");
       }
       break;
     }
+
     case 'await_payment':
       await sendWhatsAppText(from, "ننتظر تأكيد الدفع...");
       break;
+
     case 'ask_another': {
       if (/^نعم$/i.test(choice)) {
         session.step = 'welcome';
@@ -290,11 +319,13 @@ async function handleUserMessage(from, message) {
       }
       break;
     }
+
     default:
       await sendWhatsAppText(from, "حدث خطأ. أرسل 'مرحبا' أو 'وقف' لإنهاء الجلسة.");
       userSessions[from] = { step: 'welcome', certificatesSent: 0, lastActivity: Date.now() };
       break;
   }
+
   userSessions[from] = session;
 }
 
@@ -334,10 +365,12 @@ async function sendWelcomeTemplate(to) {
 async function sendCertificateImage(sender, recipient, certificateId, recipientName, customMessage = "") {
   console.log(`Generating certificate image for Certificate ID: ${certificateId}, Recipient Name: ${recipientName}`);
   await logCertificateDetails(sender, recipientName, recipient);
+
   if (!certificateId || !CERTIFICATE_PUBLIC_IDS[certificateId]) {
     console.error(`Invalid certificate ID: ${certificateId}`);
     return;
   }
+
   const certificatePublicId = CERTIFICATE_PUBLIC_IDS[certificateId];
   const certificateImageUrl = cloudinary.url(certificatePublicId, {
     transformation: [
@@ -352,6 +385,7 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
       }
     ]
   });
+
   try {
     await axios.post(
       process.env.WHATSAPP_API_URL,
@@ -394,18 +428,21 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
 
 /**
  * Creates a Thawani checkout session for paid certificates.
- * Only senderNumber, recipientNumber, certificateId, and recipientName are sent in metadata.
+ * Only includes senderNumber, recipientNumber, certificateId, and recipientName in metadata.
  */
 async function createThawaniSession(certificateId, senderNumber, recipientNumber, recipientName) {
   const THAWANI_API_KEY = process.env.THAWANI_API_KEY;
   const THAWANI_PUBLISHABLE_KEY = process.env.THAWANI_PUBLISHABLE_KEY;
+
   if (!THAWANI_API_KEY) {
     console.error("Thawani API key is not set in environment variables.");
     return null;
   }
+
   const THAWANI_API_URL = "https://checkout.thawani.om/api/v1/checkout/session";
   const productName = `Certificate #${certificateId}`;
   const productPrice = 400; // Example price in Baisa
+
   try {
     const response = await axios.post(
       THAWANI_API_URL,
@@ -417,7 +454,6 @@ async function createThawaniSession(certificateId, senderNumber, recipientNumber
         ],
         success_url: `https://e-certificates.onrender.com/success.html`,
         cancel_url: `https://e-certificates.onrender.com/cancel.html`,
-        // Only include senderNumber, recipientNumber, certificateId, and recipientName
         metadata: { senderNumber, recipientNumber, certificateId, recipientName }
       },
       {
@@ -427,6 +463,7 @@ async function createThawaniSession(certificateId, senderNumber, recipientNumber
         }
       }
     );
+
     if (response.data.success) {
       const sessionId = response.data.data.session_id;
       const paymentUrl = `https://checkout.thawani.om/pay/${sessionId}?key=${THAWANI_PUBLISHABLE_KEY}`;
@@ -444,28 +481,56 @@ async function createThawaniSession(certificateId, senderNumber, recipientNumber
 
 /**
  * Webhook for Thawani Payment Confirmation.
- * Supports both nested and top-level structures.
- * Instead of relying solely on metadata for customMessage,
- * we attempt to look up the session using senderNumber.
+ * Verifies the HMAC signature using the dedicated Thawani webhook secret.
  */
 app.post('/thawani-webhook', async (req, res) => {
   try {
-    const webhookData = req.body;
-    console.log("Received Thawani Webhook Data:", JSON.stringify(webhookData, null, 2));
-    // Support both structures:
-    const paymentStatus = webhookData.data ? webhookData.data.payment_status : webhookData.payment_status;
-    const metadata = webhookData.data ? webhookData.data.metadata : webhookData.metadata;
+    // Retrieve raw body (Buffer) as string for signature verification
+    const rawBody = req.body.toString('utf8');
+
+    // Retrieve required headers
+    const thawaniTimestamp = req.headers['thawani-timestamp'];
+    const thawaniSignature = req.headers['thawani-signature'];
+    const webhookSecret = process.env.THAWANI_WEBHOOK_SECRET; // The separate secret key shown next to your webhook URL
+
+    if (!thawaniTimestamp || !thawaniSignature || !webhookSecret) {
+      console.error("Missing required webhook headers or secret.");
+      return res.sendStatus(400);
+    }
+
+    // Compute expected HMAC signature
+    const hmac = crypto.createHmac('sha256', webhookSecret);
+    hmac.update(rawBody + '-' + thawaniTimestamp);
+    const computedSignature = hmac.digest('hex');
+
+    if (computedSignature !== thawaniSignature) {
+      console.error("Invalid webhook signature. Expected:", computedSignature, "Got:", thawaniSignature);
+      return res.sendStatus(403);
+    }
+
+    // Parse the JSON payload now that signature is verified
+    const payload = JSON.parse(rawBody);
+    console.log("Received Thawani Webhook Data:", JSON.stringify(payload, null, 2));
+
+    // Determine payment_status and metadata location
+    const paymentStatus = payload.data ? payload.data.payment_status : payload.payment_status;
+    const metadata = payload.data ? payload.data.metadata : payload.metadata;
+
     if (paymentStatus === "paid") {
       const { senderNumber, recipientNumber, certificateId, recipientName } = metadata;
-      // Attempt to retrieve customMessage from the in-memory session, if available.
+
+      // Look up customMessage from in-memory session if available
       let customMessage = "";
       if (userSessions[senderNumber] && userSessions[senderNumber].customMessage) {
         customMessage = userSessions[senderNumber].customMessage;
       }
+
       if (senderNumber && recipientNumber && certificateId && recipientName) {
         console.log(`Payment completed! Sender: ${senderNumber}, Recipient: ${recipientNumber}, Certificate ID: ${certificateId}, Name: ${recipientName}, Message: ${customMessage}`);
+
         await sendCertificateImage(senderNumber, recipientNumber, certificateId, recipientName, customMessage);
         await sendWhatsAppText(senderNumber, `شكراً للدفع! الشهادة تم إرسالها بنجاح إلى ${recipientName} مع الرسالة: "${customMessage}".`);
+
         console.log(`Terminating session for ${senderNumber}`);
         if (userSessions[senderNumber]) {
           delete userSessions[senderNumber];
