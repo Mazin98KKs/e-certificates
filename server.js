@@ -31,13 +31,13 @@ app.get('/checkout/:shortId', (req, res) => {
   }
 });
 
-// Middleware for parsing JSON bodies for WhatsApp messages
+// For WhatsApp: JSON parser
 app.use('/webhook', bodyParser.json());
 
-// For Thawani webhooks, we need the raw body for signature verification
+// For Thawani: raw body parser to verify signatures exactly
 app.use('/thawani-webhook', bodyParser.raw({ type: 'application/json' }));
 
-// In-memory user sessions and rate-limiting variables
+// In-memory user sessions
 const userSessions = {};
 const initiatedConversations = new Set();
 let initiatedCount = 0;
@@ -53,15 +53,14 @@ const sessionTimeoutMs = 5 * 60 * 1000;
 setInterval(() => {
   const now = Date.now();
   for (const userId in userSessions) {
-    const session = userSessions[userId];
-    if (now - session.lastActivity > sessionTimeoutMs) {
+    if (now - userSessions[userId].lastActivity > sessionTimeoutMs) {
       console.log(`Session for ${userId} expired and is being removed.`);
       delete userSessions[userId];
     }
   }
 }, 30 * 1000);
 
-// Certificate configuration
+// Map of certificates
 const CERTIFICATE_PUBLIC_IDS = {
   1: "bestfriend_aamfqh",
   2: "malgof_egqihg",
@@ -84,8 +83,7 @@ function validateAndFormatInternationalPhoneNumber(input) {
   const phoneToParse = '+' + cleaned;
   const phoneNumber = parsePhoneNumberFromString(phoneToParse);
   if (phoneNumber && phoneNumber.isValid()) {
-    const formatted = phoneNumber.format('E.164');
-    return formatted.substring(1);
+    return phoneNumber.format('E.164').substring(1);
   }
   return null;
 }
@@ -126,7 +124,6 @@ app.get('/webhook', (req, res) => {
   const challenge = req.query['hub.challenge'];
 
   console.log(`Webhook verification request: mode=${mode}, token=${token}, challenge=${challenge}`);
-
   if (mode && token) {
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
       console.log('WEBHOOK_VERIFIED');
@@ -179,7 +176,7 @@ app.post('/webhook', async (req, res) => {
 });
 
 /**
- * Handles conversation logic.
+ * Conversation Logic
  */
 async function handleUserMessage(from, message) {
   const choiceRaw = message.interactive?.button_reply?.id || message.text?.body;
@@ -192,13 +189,11 @@ async function handleUserMessage(from, message) {
     userSessions[from].step = 'select_certificate';
     return;
   }
-
   if (choice === "وقف") {
     if (userSessions[from]) delete userSessions[from];
     await sendWhatsAppText(from, "تم إنهاء الخدمة. شكراً.");
     return;
   }
-
   if (!userSessions[from]) {
     await sendWhatsAppText(from, "يرجى اختيار إما 'مرحبا' لبدء الخدمة أو 'وقف' لإنهائها.");
     return;
@@ -265,7 +260,7 @@ async function handleUserMessage(from, message) {
     case 'confirm_send': {
       if (/^نعم$/i.test(choice)) {
         if (FREE_CERTIFICATES.includes(session.selectedCertificate)) {
-          // Free certificate flow
+          // Free certificate
           await sendCertificateImage(
             from,
             session.recipientNumber,
@@ -278,7 +273,7 @@ async function handleUserMessage(from, message) {
           session.step = 'ask_another';
           await sendWhatsAppText(from, "هل ترغب في إرسال شهادة أخرى؟ (نعم/لا)");
         } else {
-          // Paid certificate: create a Thawani session
+          // Paid certificate
           const thawaniSessionUrl = await createThawaniSession(
             session.selectedCertificate,
             from,
@@ -360,7 +355,6 @@ async function sendWelcomeTemplate(to) {
 
 /**
  * Sends the certificate image via WhatsApp and logs certificate details.
- * Accepts an optional customMessage parameter.
  */
 async function sendCertificateImage(sender, recipient, certificateId, recipientName, customMessage = "") {
   console.log(`Generating certificate image for Certificate ID: ${certificateId}, Recipient Name: ${recipientName}`);
@@ -428,7 +422,6 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
 
 /**
  * Creates a Thawani checkout session for paid certificates.
- * Only includes senderNumber, recipientNumber, certificateId, and recipientName in metadata.
  */
 async function createThawaniSession(certificateId, senderNumber, recipientNumber, recipientName) {
   const THAWANI_API_KEY = process.env.THAWANI_API_KEY;
@@ -481,17 +474,21 @@ async function createThawaniSession(certificateId, senderNumber, recipientNumber
 
 /**
  * Webhook for Thawani Payment Confirmation.
- * Verifies the HMAC signature using the dedicated Thawani webhook secret.
+ * - Now checks data.status === "Successful"
+ * - event_type === "payment.succeeded"
+ * - Verifies signature using ascii encoding
  */
 app.post('/thawani-webhook', async (req, res) => {
   try {
-    // Retrieve raw body (Buffer) as string for signature verification
-    const rawBody = req.body.toString('utf8');
+    // Convert raw body to ASCII for signature verification
+    const rawBodyBuffer = req.body; // Buffer
+    // Thawani docs mention ASCII, so let's do:
+    const rawBodyAscii = rawBodyBuffer.toString('ascii');
 
     // Retrieve required headers
     const thawaniTimestamp = req.headers['thawani-timestamp'];
     const thawaniSignature = req.headers['thawani-signature'];
-    const webhookSecret = process.env.THAWANI_WEBHOOK_SECRET; // The separate secret key shown next to your webhook URL
+    const webhookSecret = process.env.THAWANI_WEBHOOK_SECRET; // The separate secret key next to your webhook URL
 
     if (!thawaniTimestamp || !thawaniSignature || !webhookSecret) {
       console.error("Missing required webhook headers or secret.");
@@ -499,8 +496,11 @@ app.post('/thawani-webhook', async (req, res) => {
     }
 
     // Compute expected HMAC signature
-    const hmac = crypto.createHmac('sha256', webhookSecret);
-    hmac.update(rawBody + '-' + thawaniTimestamp);
+    // Per Thawani docs, signature = HMAC of (body + "-" + thawaniTimestamp), in ASCII
+    const textBytes = Buffer.from(rawBodyAscii + '-' + thawaniTimestamp, 'ascii');
+    const keyBytes = Buffer.from(webhookSecret, 'ascii');
+    const hmac = crypto.createHmac('sha256', keyBytes);
+    hmac.update(textBytes);
     const computedSignature = hmac.digest('hex');
 
     if (computedSignature !== thawaniSignature) {
@@ -508,18 +508,19 @@ app.post('/thawani-webhook', async (req, res) => {
       return res.sendStatus(403);
     }
 
-    // Parse the JSON payload now that signature is verified
-    const payload = JSON.parse(rawBody);
+    // Parse the JSON payload after signature verification
+    const payload = JSON.parse(rawBodyAscii);
     console.log("Received Thawani Webhook Data:", JSON.stringify(payload, null, 2));
 
-    // Determine payment_status and metadata location
-    const paymentStatus = payload.data ? payload.data.payment_status : payload.payment_status;
-    const metadata = payload.data ? payload.data.metadata : payload.metadata;
+    // Check event_type or data.status
+    const eventType = payload.event_type;
+    const dataStatus = payload.data?.status; // e.g. "Successful"
 
-    if (paymentStatus === "paid") {
+    if (eventType === "payment.succeeded" && dataStatus === "Successful") {
+      // We have a successful payment
+      const metadata = payload.data?.metadata || {};
       const { senderNumber, recipientNumber, certificateId, recipientName } = metadata;
 
-      // Look up customMessage from in-memory session if available
       let customMessage = "";
       if (userSessions[senderNumber] && userSessions[senderNumber].customMessage) {
         customMessage = userSessions[senderNumber].customMessage;
@@ -527,7 +528,6 @@ app.post('/thawani-webhook', async (req, res) => {
 
       if (senderNumber && recipientNumber && certificateId && recipientName) {
         console.log(`Payment completed! Sender: ${senderNumber}, Recipient: ${recipientNumber}, Certificate ID: ${certificateId}, Name: ${recipientName}, Message: ${customMessage}`);
-
         await sendCertificateImage(senderNumber, recipientNumber, certificateId, recipientName, customMessage);
         await sendWhatsAppText(senderNumber, `شكراً للدفع! الشهادة تم إرسالها بنجاح إلى ${recipientName} مع الرسالة: "${customMessage}".`);
 
@@ -541,7 +541,7 @@ app.post('/thawani-webhook', async (req, res) => {
         return res.status(400).send("Incomplete metadata received");
       }
     } else {
-      console.log("Unhandled payment status:", paymentStatus);
+      console.log("Unhandled event or payment status:", { eventType, dataStatus });
       return res.status(400).send("Unhandled payment status");
     }
   } catch (error) {
