@@ -34,7 +34,7 @@ app.get('/checkout/:shortId', (req, res) => {
 
 // Use JSON parser for WhatsApp messages
 app.use('/webhook', bodyParser.json());
-// For Thawani webhooks, we need the raw body for HMAC signature verification
+// For Thawani webhooks, we need the raw body for HMAC verification
 app.use('/thawani-webhook', bodyParser.raw({ type: 'application/json' }));
 
 // In-memory sessions and rate-limiting
@@ -213,7 +213,7 @@ async function handleUserMessage(from, message) {
       if (choice) {
         session.recipientName = choice;
         session.step = 'ask_recipient_number';
-        await sendWhatsAppText(from, "ادخل رقم واتساب المستلم مع رمز الدولة. مثال: \nلعمان: 96890000000");
+        await sendWhatsAppText(from, "ادخل رقم واتساب المستلم مع رمز الدولة. مثال: \n+لعمان: 96890000000");
       } else {
         await sendWhatsAppText(from, "يرجى إدخال اسم صحيح.");
       }
@@ -224,17 +224,23 @@ async function handleUserMessage(from, message) {
       if (formattedNumber) {
         session.recipientNumber = formattedNumber;
         session.step = 'ask_custom_message';
-        await sendWhatsAppText(from, "أكتب الرسالة اللي ودك ترسلها له :");
+        await sendWhatsAppText(from, "أكتب الرسالة اللي ودك ترسلها له (خط واحد وبحد أقصى 50 حرف):");
       } else {
         await sendWhatsAppText(from, "يرجى إدخال رقم صحيح يشمل رمز الدولة. مثال: 96890000000");
       }
       break;
     }
     case 'ask_custom_message': {
+      // Check that the custom message is a single line and <= 50 characters.
       if (choice) {
-        session.customMessage = choice;
-        session.step = 'confirm_send';
-        await sendWhatsAppText(from, `سيتم إرسال الشهادة إلى ${session.recipientName} على الرقم: ${session.recipientNumber} برسالة: "${session.customMessage}". هل تريد إرسالها الآن؟ (نعم/لا)`);
+        if (choice.length > 50 || choice.includes('\n') || choice.includes('\r')) {
+          await sendWhatsAppText(from, "الرجاء إدخال رسالة مخصصة بخط واحد وبحد أقصى 50 حرف. حاول مرة أخرى:");
+          // Remain in this state.
+        } else {
+          session.customMessage = choice;
+          session.step = 'confirm_send';
+          await sendWhatsAppText(from, `سيتم إرسال الشهادة إلى ${session.recipientName} على الرقم: ${session.recipientNumber} برسالة: "${session.customMessage}". هل تريد إرسالها الآن؟ (نعم/لا)`);
+        }
       } else {
         await sendWhatsAppText(from, "يرجى إدخال رسالة مخصصة صحيحة.");
       }
@@ -259,7 +265,7 @@ async function handleUserMessage(from, message) {
           );
           if (thawaniSessionUrl) {
             session.paymentPending = true;
-            await sendWhatsAppText(from, `لإتمام العمليه يمكنك الدفع عن طريق آبل في منصة ثواني فالاسفل:\n${thawaniSessionUrl}`);
+            await sendWhatsAppText(from, `لإتمام العمليه يمكنك الدفع عن طريق آبل في منصة ثواني فالأسفل:\n${thawaniSessionUrl}`);
             session.step = 'await_payment';
           } else {
             await sendWhatsAppText(from, "حدث خطأ في إنشاء جلسة الدفع. حاول مرة أخرى.");
