@@ -224,7 +224,7 @@ async function handleUserMessage(from, message) {
       if (formattedNumber) {
         session.recipientNumber = formattedNumber;
         session.step = 'ask_custom_message';
-        await sendWhatsAppText(from, "أكتب الرسالة اللي ودك ترسلها له (خط واحد وبحد أقصى 50 حرف):");
+        await sendWhatsAppText(from, "أكتب الرسالة اللي ودك ترسلها له (مثال: من صاحبك صديق الطفوله):");
       } else {
         await sendWhatsAppText(from, "يرجى إدخال رقم صحيح يشمل رمز الدولة. مثال: 96890000000");
       }
