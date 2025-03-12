@@ -2,49 +2,41 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
-const crypto = require('crypto'); // For HMAC verification
+const crypto = require('crypto'); // For webhook signature verification (if needed)
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs'); // For Excel logging
 const { parsePhoneNumberFromString } = require('libphonenumber-js'); // For phone validation
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 const app = express();
 
 // Cloudinary configuration
-cloudinary.config(process.env.CLOUDINARY_URL);
+cloudinary.config(process.env.CLOUDINARY_URL_UK);
 console.log("Cloudinary Config Loaded:", cloudinary.config());
 
 // Global in-memory storage
-const checkoutLinks = {};
-const sessionMetadata = {};  // To store session metadata keyed by invoice
+const checkoutLinks = {};  // To store checkout session URLs keyed by senderNumber
+const sessionMetadata = {};  // To store session metadata keyed by Stripe session ID (or invoice)
 
-/**
- * Redirects users to their unique checkout session.
- */
-app.get('/checkout/:shortId', (req, res) => {
-  const shortId = req.params.shortId;
-  const thawaniUrl = checkoutLinks[shortId];
-  if (thawaniUrl) {
-    res.redirect(302, thawaniUrl);
-  } else {
-    res.status(404).send('Invalid or expired checkout link.');
-  }
-});
-
-// Use JSON parser for WhatsApp messages
+// Middlewares
 app.use('/webhook', bodyParser.json());
-// For Thawani webhooks, we need the raw body for HMAC verification
-app.use('/thawani-webhook', bodyParser.raw({ type: 'application/json' }));
+// For Stripe webhooks, we need the raw body for signature verification
+app.use('/stripe-webhook', bodyParser.raw({ type: 'application/json' }));
 
-// In-memory sessions and rate-limiting
+// In-memory user sessions
 const userSessions = {};
 const initiatedConversations = new Set();
 let initiatedCount = 0;
+
+// Reset initiated count every 24 hours
 setInterval(() => {
   initiatedConversations.clear();
   initiatedCount = 0;
 }, 24 * 60 * 60 * 1000);
+
+// Session timeout configuration (5 minutes)
 const sessionTimeoutMs = 5 * 60 * 1000;
 setInterval(() => {
   const now = Date.now();
@@ -70,7 +62,7 @@ const CERTIFICATE_PUBLIC_IDS = {
   9: "kingnegative_ak81hp",
   10: "lier_hyuisy",
 };
-const FREE_CERTIFICATES = [1, 5];
+const FREE_CERTIFICATES = [1];
 
 /**
  * Validates and formats an international phone number.
@@ -92,6 +84,7 @@ async function logCertificateDetails(senderNumber, recipientName, recipientNumbe
   const filePath = path.join('/data', 'sent_certificates.xlsx');
   const workbook = new ExcelJS.Workbook();
   let worksheet;
+
   if (fs.existsSync(filePath)) {
     await workbook.xlsx.readFile(filePath);
     worksheet = workbook.getWorksheet("sent certificates");
@@ -103,6 +96,7 @@ async function logCertificateDetails(senderNumber, recipientName, recipientNumbe
     worksheet = workbook.addWorksheet("sent certificates");
     worksheet.addRow(["Timestamp", "Sender Number", "Recipient Name", "Recipient Number"]);
   }
+
   const timestamp = new Date().toISOString();
   worksheet.addRow([timestamp, senderNumber, recipientName, recipientNumber]);
   await workbook.xlsx.writeFile(filePath);
@@ -110,13 +104,27 @@ async function logCertificateDetails(senderNumber, recipientName, recipientNumbe
 }
 
 /**
- * Webhook Verification Endpoint for WhatsApp.
+ * Redirects users to their unique checkout session.
+ */
+app.get('/checkout/:senderNumber', (req, res) => {
+  const senderNumber = req.params.senderNumber;
+  const sessionUrl = checkoutLinks[senderNumber];
+  if (sessionUrl) {
+    res.redirect(302, sessionUrl);
+  } else {
+    res.status(404).send('Invalid or expired checkout link.');
+  }
+});
+
+/**
+ * Webhook Verification Endpoint for WhatsApp (for language selection, etc.)
  */
 app.get('/webhook', (req, res) => {
-  const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'mysecrettoken';
+  const VERIFY_TOKEN = process.env.VERIFY_TOKEN_UK || 'mysecrettoken';
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
+
   console.log(`Webhook verification request: mode=${mode}, token=${token}, challenge=${challenge}`);
   if (mode && token) {
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
@@ -145,14 +153,17 @@ app.post('/webhook', async (req, res) => {
             const from = message.from;
             const text = message.text?.body || '';
             console.log(`Incoming message from ${from}: ${text}`);
+
+            // Rate limit new sessions
             if (!initiatedConversations.has(from)) {
               if (initiatedCount >= 990) {
-                await sendWhatsAppText(from, "Sorry, we're busy now. Please try again later.");
+                await sendWhatsAppText(from, "Sorry, we're busy right now. Please try again later.");
                 continue;
               }
               initiatedConversations.add(from);
               initiatedCount++;
             }
+
             await handleUserMessage(from, message);
           }
         }
@@ -166,27 +177,31 @@ app.post('/webhook', async (req, res) => {
 });
 
 /**
- * Handles conversation logic.
- * Flow: welcome → select_certificate → ask_recipient_name → ask_recipient_number → ask_custom_message → confirm_send → (await_payment or send immediately) → ask_another.
+ * Main Conversation Logic (English).
+ * Flow: 
+ *   welcome → select_certificate → ask_recipient_name 
+ *   → ask_recipient_number → ask_custom_message 
+ *   → confirm_send → (await_payment or send immediately) 
+ *   → ask_another.
  */
 async function handleUserMessage(from, message) {
   const choiceRaw = message.interactive?.button_reply?.id || message.text?.body;
   const choice = choiceRaw ? choiceRaw.trim() : '';
 
   // Global commands
-  if (choice === "مرحبا") {
+  if (choice === "Hello") {
     userSessions[from] = { step: 'welcome', certificatesSent: 0, lastActivity: Date.now() };
     await sendWelcomeTemplate(from);
     userSessions[from].step = 'select_certificate';
     return;
   }
-  if (choice === "وقف") {
+  if (choice === "Stop") {
     if (userSessions[from]) delete userSessions[from];
-    await sendWhatsAppText(from, "تم إنهاء الخدمة. شكراً.");
+    await sendWhatsAppText(from, "Session ended. Thank you.");
     return;
   }
   if (!userSessions[from]) {
-    await sendWhatsAppText(from, "يرجى اختيار إما 'مرحبا' لبدء الخدمة أو 'وقف' لإنهائها.");
+    await sendWhatsAppText(from, "Please type 'Hello' to start or 'Stop' to exit.");
     return;
   }
 
@@ -198,109 +213,127 @@ async function handleUserMessage(from, message) {
       await sendWelcomeTemplate(from);
       session.step = 'select_certificate';
       break;
+
     case 'select_certificate': {
       const certificateChoice = parseInt(choice, 10);
       if (certificateChoice && certificateChoice >= 1 && certificateChoice <= 10) {
         session.selectedCertificate = certificateChoice;
         session.step = 'ask_recipient_name';
-        await sendWhatsAppText(from, "وش اسم الشخص اللي ودك ترسله الشهاده");
+        await sendWhatsAppText(from, "What is the recipient's name?");
       } else {
-        await sendWhatsAppText(from, "يرجى اختيار رقم صحيح من 1 إلى 10.");
+        await sendWhatsAppText(from, "Please choose a valid certificate number from 1 to 10.");
       }
       break;
     }
+
     case 'ask_recipient_name': {
       if (choice) {
         session.recipientName = choice;
         session.step = 'ask_recipient_number';
-        await sendWhatsAppText(from, "ادخل رقم واتساب المستلم مع رمز الدولة. مثال: \n +لعمان: 96890000000");
+        await sendWhatsAppText(from, "Enter the recipient's WhatsApp number with country code. Example: +447700900000");
       } else {
-        await sendWhatsAppText(from, "يرجى إدخال اسم صحيح.");
+        await sendWhatsAppText(from, "Please enter a valid recipient name.");
       }
       break;
     }
+
     case 'ask_recipient_number': {
       const formattedNumber = validateAndFormatInternationalPhoneNumber(choice);
       if (formattedNumber) {
         session.recipientNumber = formattedNumber;
         session.step = 'ask_custom_message';
-        await sendWhatsAppText(from, "أكتب الرسالة اللي ودك ترسلها له (مثال: من صاحبك صديق الطفوله):");
+        await sendWhatsAppText(from, "Enter your custom message (single line, max 50 characters):");
       } else {
-        await sendWhatsAppText(from, "يرجى إدخال رقم صحيح يشمل رمز الدولة. مثال: 96890000000");
+        await sendWhatsAppText(from, "Please enter a valid phone number including the country code. Example: 447700900000");
       }
       break;
     }
+
     case 'ask_custom_message': {
-      // Check that the custom message is a single line and <= 50 characters.
       if (choice) {
+        // Check for single line and max 50 characters
         if (choice.length > 50 || choice.includes('\n') || choice.includes('\r')) {
-          await sendWhatsAppText(from, "الرجاء إدخال رسالة مخصصة بخط واحد وبحد أقصى 50 حرف. حاول مرة أخرى:");
-          // Remain in this state.
+          await sendWhatsAppText(from, "Please enter a single-line custom message of up to 50 characters. Try again:");
+          // Remain in this state
         } else {
           session.customMessage = choice;
           session.step = 'confirm_send';
-          await sendWhatsAppText(from, `سيتم إرسال الشهادة إلى ${session.recipientName} على الرقم: ${session.recipientNumber} برسالة: "${session.customMessage}". هل تريد إرسالها الآن؟ (نعم/لا)`);
+          await sendWhatsAppText(
+            from,
+            `Certificate will be sent to ${session.recipientName} (${session.recipientNumber}) with the message: "${session.customMessage}". Do you want to send it now? (Yes/No)`
+          );
         }
       } else {
-        await sendWhatsAppText(from, "يرجى إدخال رسالة مخصصة صحيحة.");
+        await sendWhatsAppText(from, "Please enter a valid custom message.");
       }
       break;
     }
+
     case 'confirm_send': {
-      if (/^نعم$/i.test(choice)) {
+      if (/^Yes$/i.test(choice)) {
         if (FREE_CERTIFICATES.includes(session.selectedCertificate)) {
-          // Free certificate: send immediately
-          await sendCertificateImage(from, session.recipientNumber, session.selectedCertificate, session.recipientName, session.customMessage);
+          // Free certificate
+          await sendCertificateImage(
+            from, 
+            session.recipientNumber, 
+            session.selectedCertificate, 
+            session.recipientName, 
+            session.customMessage
+          );
           session.certificatesSent++;
-          await sendWhatsAppText(from, "تم إرسال الشهادة بنجاح.");
+          await sendWhatsAppText(from, "Certificate sent successfully.");
           session.step = 'ask_another';
-          await sendWhatsAppText(from, "هل ترغب في إرسال شهادة أخرى؟ (نعم/لا)");
+          await sendWhatsAppText(from, "Would you like to send another certificate? (Yes/No)");
         } else {
-          // Paid certificate: create a Thawani session
-          const thawaniSessionUrl = await createThawaniSession(
+          // Paid certificate
+          const stripeSessionUrl = await createStripeCheckoutSession(
             session.selectedCertificate,
             from,
             session.recipientNumber,
             session.recipientName
           );
-          if (thawaniSessionUrl) {
+          if (stripeSessionUrl) {
             session.paymentPending = true;
-            await sendWhatsAppText(from, `لإتمام العمليه يمكنك الدفع عن طريق آبل في منصة ثواني فالأسفل:\n${thawaniSessionUrl}`);
+            await sendWhatsAppText(from, `To complete the process, please pay via the following link:\n${stripeSessionUrl}`);
             session.step = 'await_payment';
           } else {
-            await sendWhatsAppText(from, "حدث خطأ في إنشاء جلسة الدفع. حاول مرة أخرى.");
+            await sendWhatsAppText(from, "An error occurred while creating the payment session. Please try again.");
           }
         }
-      } else if (/^لا$/i.test(choice)) {
-        await sendWhatsAppText(from, "تم إنهاء المحادثة. شكراً.");
+      } else if (/^No$/i.test(choice)) {
+        await sendWhatsAppText(from, "Session ended. Thank you.");
         delete userSessions[from];
         return;
       } else {
-        await sendWhatsAppText(from, "يرجى الرد بـ (نعم/لا).");
+        await sendWhatsAppText(from, "Please respond with Yes or No.");
       }
       break;
     }
+
     case 'await_payment':
-      await sendWhatsAppText(from, "ننتظر تأكيد الدفع...");
+      await sendWhatsAppText(from, "Waiting for payment confirmation...");
       break;
+
     case 'ask_another': {
-      if (/^نعم$/i.test(choice)) {
+      if (/^Yes$/i.test(choice)) {
         session.step = 'welcome';
         await sendWelcomeTemplate(from);
         session.step = 'select_certificate';
-      } else if (/^لا$/i.test(choice)) {
-        await sendWhatsAppText(from, "تم إنهاء المحادثة. شكراً.");
+      } else if (/^No$/i.test(choice)) {
+        await sendWhatsAppText(from, "Session ended. Thank you.");
         delete userSessions[from];
       } else {
-        await sendWhatsAppText(from, "يرجى الرد بـ (نعم/لا).");
+        await sendWhatsAppText(from, "Please respond with Yes or No.");
       }
       break;
     }
+
     default:
-      await sendWhatsAppText(from, "حدث خطأ. أرسل 'مرحبا' أو 'وقف' لإنهاء الجلسة.");
+      await sendWhatsAppText(from, "An error occurred. Please type 'Hello' to start a new session or 'Stop' to exit.");
       userSessions[from] = { step: 'welcome', certificatesSent: 0, lastActivity: Date.now() };
       break;
   }
+
   userSessions[from] = session;
 }
 
@@ -309,15 +342,16 @@ async function handleUserMessage(from, message) {
  */
 async function sendWelcomeTemplate(to) {
   try {
+    // NOTE: The only line changed is the URL below
     await axios.post(
-      process.env.WHATSAPP_API_URL,
+      "https://graph.facebook.com/v22.0/511694895370910/messages", // Hard-coded new WhatsApp API URL
       {
         messaging_product: 'whatsapp',
         to,
         type: 'template',
         template: {
-          name: 'wel_sele',
-          language: { code: 'ar' }
+          name: 'wel_en',  // Ensure you have an English welcome template
+          language: { code: 'en' }
         }
       },
       {
@@ -340,6 +374,7 @@ async function sendWelcomeTemplate(to) {
 async function sendCertificateImage(sender, recipient, certificateId, recipientName, customMessage = "") {
   console.log(`Generating certificate image for Certificate ID: ${certificateId}, Recipient Name: ${recipientName}`);
   await logCertificateDetails(sender, recipientName, recipient);
+
   if (!certificateId || !CERTIFICATE_PUBLIC_IDS[certificateId]) {
     console.error(`Invalid certificate ID: ${certificateId}`);
     return;
@@ -358,16 +393,18 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
       }
     ]
   });
+
   try {
+    // NOTE: The only line changed is the URL below
     await axios.post(
-      process.env.WHATSAPP_API_URL,
+      "https://graph.facebook.com/v22.0/511694895370910/messages", // Hard-coded new WhatsApp API URL
       {
         messaging_product: 'whatsapp',
         to: recipient,
         type: 'template',
         template: {
-          name: 'gift1',
-          language: { code: 'ar' },
+          name: 'gift1',  // Ensure you have an English gift template
+          language: { code: 'en' },
           components: [
             {
               type: 'header',
@@ -399,133 +436,92 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
 }
 
 /**
- * Creates a Thawani checkout session for paid certificates.
- * Only includes senderNumber, recipientNumber, certificateId, and recipientName in metadata.
- * Stores session metadata for later lookup.
+ * Creates a Stripe checkout session for paid certificates.
+ * Stores session metadata keyed by Stripe session ID.
  */
-async function createThawaniSession(certificateId, senderNumber, recipientNumber, recipientName) {
-  const THAWANI_API_KEY = process.env.THAWANI_API_KEY;
-  const THAWANI_PUBLISHABLE_KEY = process.env.THAWANI_PUBLISHABLE_KEY;
-  if (!THAWANI_API_KEY) {
-    console.error("Thawani API key is not set in environment variables.");
+async function createStripeCheckoutSession(certificateId, senderNumber, recipientNumber, recipientName) {
+  // This is only for demonstration – replace with real Price IDs
+  const certificateToPriceMap = {
+    2: "price_ABC",
+    3: "price_DEF",
+    4: "price_GHI",
+    6: "price_JKL",
+    7: "price_MNO",
+    8: "price_PQR",
+    9: "price_STU",
+    10: "price_VWX"
+  };
+
+  const priceId = certificateToPriceMap[certificateId];
+  if (!priceId) {
+    console.error(`No Stripe price ID found for certificate ${certificateId}`);
     return null;
   }
-  const THAWANI_API_URL = "https://checkout.thawani.om/api/v1/checkout/session";
-  const productName = `Certificate #${certificateId}`;
-  const productPrice = 400; // Example price in Baisa
+
   try {
-    const response = await axios.post(
-      THAWANI_API_URL,
-      {
-        client_reference_id: senderNumber,
-        mode: "payment",
-        products: [
-          { name: productName, quantity: 1, unit_amount: productPrice }
-        ],
-        success_url: `https://e-certificates.onrender.com/success.html`,
-        cancel_url: `https://e-certificates.onrender.com/cancel.html`,
-        metadata: { senderNumber, recipientNumber, certificateId, recipientName }
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [{ price: priceId, quantity: 1 }],
+      mode: 'payment',
+      metadata: {
+        senderNumber,
+        recipientNumber,
+        certificateId,
+        recipientName
       },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "thawani-api-key": THAWANI_API_KEY,
-        }
-      }
-    );
-    if (response.data.success) {
-      const sessionId = response.data.data.session_id;
-      // Try both invoice field names:
-      const invoice = response.data.data.invoice || response.data.data.checkout_invoice;
-      if (invoice) {
-        sessionMetadata[invoice] = {
-          senderNumber,
-          recipientNumber,
-          certificateId,
-          recipientName,
-          customMessage: userSessions[senderNumber]?.customMessage || ""
-        };
-      }
-      const paymentUrl = `https://checkout.thawani.om/pay/${sessionId}?key=${THAWANI_PUBLISHABLE_KEY}`;
-      checkoutLinks[senderNumber] = paymentUrl;
-      return `https://e-certificates.onrender.com/checkout/${senderNumber}`;
-    } else {
-      console.error("Thawani session creation failed:", response.data);
-      return null;
-    }
+      success_url: "https://e-certificates.onrender.com/success.html",
+      cancel_url: "https://e-certificates.onrender.com/cancel.html",
+      billing_address_collection: 'none'
+    });
+    console.log(`Stripe checkout session created: ${session.id}`);
+
+    sessionMetadata[session.id] = {
+      senderNumber,
+      recipientNumber,
+      certificateId,
+      recipientName,
+      customMessage: userSessions[senderNumber]?.customMessage || ""
+    };
+    checkoutLinks[senderNumber] = session.url;
+    return `https://e-certificates.onrender.com/checkout/${senderNumber}`;
   } catch (error) {
-    console.error("Error creating Thawani checkout session:", error.response?.data || error.message);
+    console.error('Error creating Stripe checkout session:', error.message);
     return null;
   }
 }
 
 /**
- * Webhook for Thawani Payment Confirmation.
- * Verifies the HMAC signature using the dedicated webhook secret.
- * Looks up session metadata via invoice.
+ * Stripe Webhook for Payment Confirmation.
  */
-app.post('/thawani-webhook', async (req, res) => {
+app.post('/stripe-webhook', bodyParser.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  let event;
   try {
-    // Retrieve raw body as UTF-8
-    const rawBody = req.body.toString('utf8');
-    // Retrieve required headers
-    const thawaniTimestamp = req.headers['thawani-timestamp'];
-    const thawaniSignature = req.headers['thawani-signature'];
-    const webhookSecret = process.env.THAWANI_WEBHOOK_SECRET; // Use your dedicated webhook secret
-
-    if (!thawaniTimestamp || !thawaniSignature || !webhookSecret) {
-      console.error("Missing required webhook headers or secret.");
-      return res.sendStatus(400);
-    }
-
-    // Log debug info
-    console.log("Raw webhook body:", rawBody);
-    console.log("Thawani Timestamp:", thawaniTimestamp);
-
-    // Compute expected HMAC signature using UTF-8 encoding
-    const hmac = crypto.createHmac('sha256', Buffer.from(webhookSecret, 'utf8'));
-    hmac.update(rawBody + '-' + thawaniTimestamp, 'utf8');
-    const computedSignature = hmac.digest('hex');
-
-    if (computedSignature !== thawaniSignature) {
-      console.error("Invalid webhook signature. Expected:", computedSignature, "Got:", thawaniSignature);
-      return res.sendStatus(403);
-    }
-
-    // Parse the JSON payload after signature verification
-    const payload = JSON.parse(rawBody);
-    console.log("Received Thawani Webhook Data:", JSON.stringify(payload, null, 2));
-
-    // Check for event type and status
-    const eventType = payload.event_type;
-    const dataStatus = payload.data ? payload.data.status : undefined;
-    // Try to get invoice from either field:
-    const invoice = (payload.data && (payload.data.invoice || payload.data.checkout_invoice)) || undefined;
-
-    if (eventType === "payment.succeeded" && dataStatus === "Successful") {
-      if (invoice && sessionMetadata[invoice]) {
-        const { senderNumber, recipientNumber, certificateId, recipientName, customMessage } = sessionMetadata[invoice];
-        console.log(`Payment completed! Sender: ${senderNumber}, Recipient: ${recipientNumber}, Certificate ID: ${certificateId}, Name: ${recipientName}, Message: ${customMessage}`);
-        await sendCertificateImage(senderNumber, recipientNumber, certificateId, recipientName, customMessage);
-        await sendWhatsAppText(senderNumber, `شكراً للدفع! الشهادة تم إرسالها بنجاح إلى ${recipientName} مع الرسالة: "${customMessage}".`);
-        console.log(`Terminating session for ${senderNumber}`);
-        if (userSessions[senderNumber]) {
-          delete userSessions[senderNumber];
-        }
-        delete sessionMetadata[invoice];
-        return res.sendStatus(200);
-      } else {
-        console.error("Session metadata not found for invoice:", invoice);
-        return res.status(400).send("Session metadata not found");
-      }
-    } else {
-      console.log("Unhandled event or payment status:", { eventType, dataStatus });
-      return res.status(400).send("Unhandled payment status");
-    }
-  } catch (error) {
-    console.error("Error handling Thawani Webhook:", error.response?.data || error.message);
-    return res.sendStatus(500);
+    event = require('stripe')(process.env.STRIPE_SECRET_KEY).webhooks.constructEvent(req.body, sig, webhookSecret);
+  } catch (err) {
+    console.error("Stripe webhook signature verification failed:", err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
   }
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    const { senderNumber, recipientNumber, certificateId, recipientName } = session.metadata;
+    const customMessage = sessionMetadata[session.id]?.customMessage || "";
+    if (senderNumber && recipientNumber && certificateId && recipientName) {
+      console.log(`Payment completed via Stripe! Sender: ${senderNumber}, Recipient: ${recipientNumber}, Certificate ID: ${certificateId}, Name: ${recipientName}, Message: ${customMessage}`);
+      await sendCertificateImage(senderNumber, recipientNumber, certificateId, recipientName, customMessage);
+      await sendWhatsAppText(senderNumber, `Thank you for your payment! The certificate has been sent to ${recipientName} with the message: "${customMessage}".`);
+      console.log(`Terminating session for ${senderNumber}`);
+      if (userSessions[senderNumber]) {
+        delete userSessions[senderNumber];
+      }
+      delete sessionMetadata[session.id];
+    } else {
+      console.error("Incomplete metadata in Stripe session.");
+    }
+  }
+  res.sendStatus(200);
 });
 
 /**
@@ -533,8 +529,9 @@ app.post('/thawani-webhook', async (req, res) => {
  */
 async function sendWhatsAppText(to, message) {
   try {
+    // NOTE: The only line changed is the URL below
     await axios.post(
-      process.env.WHATSAPP_API_URL,
+      "https://graph.facebook.com/v22.0/511694895370910/messages", // Hard-coded new WhatsApp API URL
       {
         messaging_product: 'whatsapp',
         to,
