@@ -51,16 +51,16 @@ setInterval(() => {
 
 // Certificate configuration
 const CERTIFICATE_PUBLIC_IDS = {
-  1: "bestfriend_aamfqh",
-  2: "malgof_egqihg",
-  3: "kfoo_ncybxx",
-  4: "lazy_vndi9i",
-  5: "Mokaf7_wdocgh",
-  6: "coffeeadditcted_hdqlch",
-  7: "complaining_rprhsl",
-  8: "friendly_e7szzo",
-  9: "kingnegative_ak81hp",
-  10: "lier_hyuisy",
+  1: "friendship_izeffy",
+  2: "BFF_gq9uvn",
+  3: "king_negative_lppdtt",
+  4: "LGBTQ_ggrnfx",
+  5: "goodvibes_j1pwa7",
+  6: "coffeead_ot6pfn",
+  7: "awsomeness_abfqao",
+  8: "gossip_w3esd9",
+  9: "do_nothing_rfcws5",
+  10: "overthinker_m7p4tw",
 };
 const FREE_CERTIFICATES = [1];
 
@@ -442,14 +442,15 @@ async function sendCertificateImage(sender, recipient, certificateId, recipientN
 async function createStripeCheckoutSession(certificateId, senderNumber, recipientNumber, recipientName) {
   // This is only for demonstration – replace with real Price IDs
   const certificateToPriceMap = {
-    2: "price_ABC",
-    3: "price_DEF",
-    4: "price_GHI",
-    6: "price_JKL",
-    7: "price_MNO",
-    8: "price_PQR",
-    9: "price_STU",
-    10: "price_VWX"
+    2: "price_1R2AsnBH45p3WHSsiRKGkSR3",
+    3: "price_1R2LIYBH45p3WHSsaLS2zDvR",
+    4: "price_1R2LJ7BH45p3WHSsCGmpENqT",
+    5: "price_1R2LJuBH45p3WHSs0J12FKNS"
+    6: "price_1R2LKPBH45p3WHSsEkbP0zNE",
+    7: "price_1R2LKtBH45p3WHSsqtyuMm1t",
+    8: "price_1R2LLIBH45p3WHSssBVBri6r",
+    9: "price_1R2LLsBH45p3WHSsKBlo6kSL",
+    10: "price_1R2LMIBH45p3WHSsaLdB2QXQ"
   };
 
   const priceId = certificateToPriceMap[certificateId];
