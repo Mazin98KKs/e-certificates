@@ -445,7 +445,7 @@ async function createStripeCheckoutSession(certificateId, senderNumber, recipien
     2: "price_1R2AsnBH45p3WHSsiRKGkSR3",
     3: "price_1R2LIYBH45p3WHSsaLS2zDvR",
     4: "price_1R2LJ7BH45p3WHSsCGmpENqT",
-    5: "price_1R2LJuBH45p3WHSs0J12FKNS"
+    5: "price_1R2LJuBH45p3WHSs0J12FKNS",
     6: "price_1R2LKPBH45p3WHSsEkbP0zNE",
     7: "price_1R2LKtBH45p3WHSsqtyuMm1t",
     8: "price_1R2LLIBH45p3WHSssBVBri6r",
