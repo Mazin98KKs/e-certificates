@@ -242,7 +242,7 @@ async function handleUserMessage(from, message) {
       if (formattedNumber) {
         session.recipientNumber = formattedNumber;
         session.step = 'ask_custom_message';
-        await sendWhatsAppText(from, "Enter your custom message (single line, max 50 characters):");
+        await sendWhatsAppText(from, "Enter your custom message. for example: from your best friend (single line, max 50 characters):");
       } else {
         await sendWhatsAppText(from, "Please enter a valid phone number including the country code. Example: 447700900000");
       }
@@ -294,7 +294,7 @@ async function handleUserMessage(from, message) {
           );
           if (stripeSessionUrl) {
             session.paymentPending = true;
-            await sendWhatsAppText(from, `To complete the process, please pay via the following link:\n${stripeSessionUrl}`);
+            await sendWhatsAppText(from, `To complete the process, please checkout via Stripe (Apple Pay/Link):\n${stripeSessionUrl}`);
             session.step = 'await_payment';
           } else {
             await sendWhatsAppText(from, "An error occurred while creating the payment session. Please try again.");
