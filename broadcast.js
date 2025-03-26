@@ -38,7 +38,7 @@ async function sendBroadcast(templateName, recipientNumbers) {
           type: 'template',
           template: {
             name: templateName,
-            language: { code: 'ar' }
+            language: { code: 'en' }
           }
         },
         {
