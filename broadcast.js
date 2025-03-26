@@ -1,5 +1,5 @@
 // Define environment variables directly in the code
-const WHATSAPP_API_URL = 'https://graph.facebook.com/v22.0/562058050326305/messages';
+const WHATSAPP_API_URL = 'https://graph.facebook.com/v22.0/511694895370910/messages';
 const WHATSAPP_API_TOKEN = 'EAATw1es7w9gBO5PL0KZA0Mf0qZASrHUJ1oLCtBQGGZBzRW8YZCRWpfhqfO4SYcLRzvKF7c1cpNaFeZAdIozsOLTgXeKfBA2iln4jTqRrmnjATNyA2BNoeNi1yLuOBXINIXhXobjI4whnnZCk6Fw5ZBwm5vvgf55FRwzpzntRqwpI0mY98RhJGFgvFr2afJRInKvpAZDZD';
 
 if (!WHATSAPP_API_URL || !WHATSAPP_API_TOKEN) {
@@ -65,7 +65,7 @@ async function sendBroadcast(templateName, recipientNumbers) {
     }
 
     console.log(`Sending messages to ${recipients.length} recipients...`);
-    await sendBroadcast('promo3', recipients);
+    await sendBroadcast('promo5', recipients);
     console.log('Broadcast complete.');
   } catch (error) {
     console.error('Error during broadcast process:', error.message);
