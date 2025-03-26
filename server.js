@@ -189,7 +189,7 @@ async function handleUserMessage(from, message) {
   const choice = choiceRaw ? choiceRaw.trim() : '';
 
   // Global commands
-  if (choice === "Hello") {
+  if (choice === "Start") {
     userSessions[from] = { step: 'welcome', certificatesSent: 0, lastActivity: Date.now() };
     await sendWelcomeTemplate(from);
     userSessions[from].step = 'select_certificate';
@@ -201,7 +201,7 @@ async function handleUserMessage(from, message) {
     return;
   }
   if (!userSessions[from]) {
-    await sendWhatsAppText(from, "Please type 'Hello' to start or 'Stop' to exit.");
+    await sendWhatsAppText(from, "Please type 'Start' to begin or 'Stop' to exit.");
     return;
   }
 
