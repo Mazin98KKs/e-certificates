@@ -103,7 +103,7 @@ async function sendCertificate(sender,recipient,certId,recName,custom=''){
   await waPost({
     messaging_product:'whatsapp',to:recipient,type:'template',
     template:{
-      name:'gift1',language:{code:'en'},
+      name:'gift8',language:{code:'en'},
       components:[
         {type:'header',parameters:[{type:'image',image:{link:url}}]},
         {type:'body', parameters:[
@@ -161,7 +161,7 @@ app.post('/webhook', async (req,res)=>{
             dailyBizInit.add(from); dailyBizCount++;
           }
 
-          if(text.toLowerCase()==='who sent me?'){
+          if(text.toLowerCase()==='who'){
             const cnt=+(await redis.get(`sentCount:${from}`)||'0');
             if(cnt<3) await sendText(from,`Send 3 certificates first (${cnt}/3).`);
             else{
